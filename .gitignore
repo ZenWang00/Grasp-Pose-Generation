@@ -1,0 +1,25 @@
+build/
+install/
+log/
+
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+*.swp
+*.save
+.vscode/
+.idea/
+.DS_Store
+
+*.bag
+*.mcap
+*.pcd
+*.ply
+/models/  # 如果你下载了大型第三方 3D 模型，建议排除
+
+
+*.pth
+*.onnx
+*.weights
