@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>p_hand_description</name>
+  <version>0.0.1</version>
+  <description>The p_hand_description package (converted to ROS 2)</description>
+
+  <maintainer email="paw@todo.todo">paw</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>urdf</depend>
+  <depend>kdl_parser</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+
+
+</package>
+

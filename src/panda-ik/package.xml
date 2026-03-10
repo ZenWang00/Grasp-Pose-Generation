@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>panda_ik</name>
+  <version>0.1.1</version>
+  <description>Test control for Panda IK</description>
+
+  <maintainer email="kpwelsh@cs.wisc.edu">Kevin Welsh</maintainer>
+  <license>Apache-2.0</license>
+
+  <author>Kevin Welsh</author>
+
+  <!-- Build system -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Build dependencies -->
+  <build_depend>rclcpp</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>realtime_tools</build_depend>
+  <build_depend>tf2</build_depend>
+  <build_depend>tf2_ros</build_depend>
+  <build_depend>eigen3_cmake_module</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>tf2_geometry_msgs</build_depend>
+  <build_depend>nav_msgs</build_depend>
+
+
+  <build_depend>rosidl_default_runtime</build_depend>
+  <build_depend>geosacs_msgs</build_depend>
+
+  <exec_depend>geosacs_msgs</exec_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+
+  <!-- Execution dependencies -->
+  <exec_depend>rclcpp</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>realtime_tools</exec_depend>
+  <exec_depend>tf2</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>eigen3_cmake_module</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf2_geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
+
+
+
+

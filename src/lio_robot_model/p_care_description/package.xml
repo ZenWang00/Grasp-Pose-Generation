@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>p_care_description</name>
+  <version>0.0.1</version>
+  <description>ROS 2 version of the p_care_description package</description>
+
+  <maintainer email="mpm@todo.todo">mpm</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>p_camera_description</exec_depend>
+  <exec_depend>p_arm_description</exec_depend>
+  <exec_depend>p_grip_description</exec_depend>
+  <exec_depend>platform_description</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
+

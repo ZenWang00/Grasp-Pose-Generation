@@ -1,0 +1,11 @@
+string action
+string bridge
+string arguments
+---
+bool success
+string return_value
+string error_message
+---
+int32 status
+int32 mode
+
