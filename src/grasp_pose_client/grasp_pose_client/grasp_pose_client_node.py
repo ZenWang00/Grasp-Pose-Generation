@@ -8,7 +8,6 @@ The server's top-K poses are returned both as the service response and as
 """
 from __future__ import annotations
 
-import json
 import threading
 from typing import Optional
 
@@ -174,8 +173,8 @@ class GraspPoseClientNode(Node):
                 "Inspect /health on the server for details."
             )
 
-    def _lookup_T_base_camera(self, stamp) -> Optional[str]:
-        """Look up gripper→base transform at the image timestamp; return as JSON 4×4 or None."""
+    def _lookup_T_base_camera(self, stamp) -> Optional[np.ndarray]:
+        """Look up camera→base transform at the image timestamp; return as 4×4 numpy array or None."""
         try:
             ts = self._tf_buffer.lookup_transform(
                 self._robot_base_frame_id,
@@ -193,7 +192,6 @@ class GraspPoseClientNode(Node):
 
         t = ts.transform.translation
         q = ts.transform.rotation
-        # Quaternion (x, y, z, w) → 3×3 rotation matrix
         x, y, z, w = q.x, q.y, q.z, q.w
         R = np.array([
             [1 - 2*(y*y + z*z),   2*(x*y - w*z),   2*(x*z + w*y)],
@@ -205,7 +203,74 @@ class GraspPoseClientNode(Node):
         T[0, 3] = t.x
         T[1, 3] = t.y
         T[2, 3] = t.z
-        return json.dumps(T.tolist())
+        return T
+
+    @staticmethod
+    def _transform_to_base(
+        entry: dict,
+        T_base_camera: np.ndarray,
+    ) -> dict:
+        """Apply T_base_camera to a camera-frame grasp entry, returning base-frame position/quaternion."""
+        pose_4x4 = entry.get("pose_4x4")
+        if pose_4x4 is not None:
+            T_grasp_cam = np.asarray(pose_4x4, dtype=np.float64)
+        else:
+            position = entry.get("position_xyz", [0.0, 0.0, 0.0])
+            quat = entry.get("quaternion_xyzw", [0.0, 0.0, 0.0, 1.0])
+            x, y, z, w = float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])
+            R = np.array([
+                [1 - 2*(y*y + z*z),   2*(x*y - w*z),   2*(x*z + w*y)],
+                [  2*(x*y + w*z), 1 - 2*(x*x + z*z),   2*(y*z - w*x)],
+                [  2*(x*z - w*y),   2*(y*z + w*x), 1 - 2*(x*x + y*y)],
+            ], dtype=np.float64)
+            T_grasp_cam = np.eye(4)
+            T_grasp_cam[:3, :3] = R
+            T_grasp_cam[0, 3] = float(position[0])
+            T_grasp_cam[1, 3] = float(position[1])
+            T_grasp_cam[2, 3] = float(position[2])
+
+        T_grasp_base = T_base_camera @ T_grasp_cam
+        R_base = T_grasp_base[:3, :3]
+        t_base = T_grasp_base[:3, 3]
+
+        # Rotation matrix → quaternion (Shepperd's method)
+        trace = R_base[0, 0] + R_base[1, 1] + R_base[2, 2]
+        if trace > 0.0:
+            s = np.sqrt(trace + 1.0) * 2.0
+            qw = 0.25 * s
+            qx = (R_base[2, 1] - R_base[1, 2]) / s
+            qy = (R_base[0, 2] - R_base[2, 0]) / s
+            qz = (R_base[1, 0] - R_base[0, 1]) / s
+        elif (R_base[0, 0] > R_base[1, 1]) and (R_base[0, 0] > R_base[2, 2]):
+            s = np.sqrt(1.0 + R_base[0, 0] - R_base[1, 1] - R_base[2, 2]) * 2.0
+            qw = (R_base[2, 1] - R_base[1, 2]) / s
+            qx = 0.25 * s
+            qy = (R_base[0, 1] + R_base[1, 0]) / s
+            qz = (R_base[0, 2] + R_base[2, 0]) / s
+        elif R_base[1, 1] > R_base[2, 2]:
+            s = np.sqrt(1.0 + R_base[1, 1] - R_base[0, 0] - R_base[2, 2]) * 2.0
+            qw = (R_base[0, 2] - R_base[2, 0]) / s
+            qx = (R_base[0, 1] + R_base[1, 0]) / s
+            qy = 0.25 * s
+            qz = (R_base[1, 2] + R_base[2, 1]) / s
+        else:
+            s = np.sqrt(1.0 + R_base[2, 2] - R_base[0, 0] - R_base[1, 1]) * 2.0
+            qw = (R_base[1, 0] - R_base[0, 1]) / s
+            qx = (R_base[0, 2] + R_base[2, 0]) / s
+            qy = (R_base[1, 2] + R_base[2, 1]) / s
+            qz = 0.25 * s
+
+        q = np.array([qx, qy, qz, qw])
+        norm = float(np.linalg.norm(q))
+        if norm > 0.0:
+            q = q / norm
+        if q[3] < 0.0:
+            q = -q
+
+        return {
+            "position_xyz": t_base.tolist(),
+            "quaternion_xyzw": [float(q[0]), float(q[1]), float(q[2]), float(q[3])],
+        }
 
     def _on_synced_frames(
         self,
@@ -294,12 +359,12 @@ class GraspPoseClientNode(Node):
         provider = request.provider or self._default_provider or None
         model = request.model or self._default_model or None
 
-        T_base_camera_json = self._lookup_T_base_camera(color_msg.header.stamp)
+        T_base_camera = self._lookup_T_base_camera(color_msg.header.stamp)
 
         self.get_logger().info(
             f'request_grasp: task_spec="{task_spec}" top_k={top_k} '
             f"num_candidates={num_candidates} frame_id={frame_id} "
-            f"base_frame={'yes' if T_base_camera_json else 'no'}"
+            f"base_frame={'yes' if T_base_camera is not None else 'no'}"
         )
 
         try:
@@ -314,7 +379,6 @@ class GraspPoseClientNode(Node):
                 num_candidates=num_candidates,
                 provider=provider,
                 model=model,
-                T_base_camera_json=T_base_camera_json,
                 timeout_s=self._request_timeout_s,
             )
         except GraspServerError as exc:
@@ -323,9 +387,8 @@ class GraspPoseClientNode(Node):
             return response
 
         stamp = color_msg.header.stamp  # echo the source frame timestamp
-        # Prefer base_frame poses (robot base frame) when available; fall back to camera frame.
-        has_base_frame = bool(result.grasps and result.grasps[0].get("base_frame"))
-        if has_base_frame:
+        # Transform camera-frame poses to robot base frame when TF is available.
+        if T_base_camera is not None:
             publish_frame_id = self._robot_base_frame_id
         else:
             publish_frame_id = result.frame_id
@@ -334,7 +397,7 @@ class GraspPoseClientNode(Node):
         scores: list[float] = []
         widths: list[float] = []
         for entry in result.grasps:
-            pose_data = entry.get("base_frame") if has_base_frame else entry
+            pose_data = self._transform_to_base(entry, T_base_camera) if T_base_camera is not None else entry
             pose_stamped = self._build_pose_stamped(
                 pose_data, stamp=stamp, frame_id=publish_frame_id
             )

@@ -59,7 +59,6 @@ def post_grasp(
     num_candidates: int,
     provider: str | None = None,
     model: str | None = None,
-    T_base_camera_json: str | None = None,
     timeout_s: float = 60.0,
 ) -> GraspResult:
     """POST a single multipart request and return the parsed result."""
@@ -79,8 +78,6 @@ def post_grasp(
         data["provider"] = provider
     if model:
         data["model"] = model
-    if T_base_camera_json is not None:
-        data["T_base_camera"] = T_base_camera_json
 
     try:
         response = requests.post(url, files=files, data=data, timeout=timeout_s)
