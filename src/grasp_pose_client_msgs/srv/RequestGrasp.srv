@@ -1,0 +1,30 @@
+# Request a 6-DoF grasp pose for a natural-language target.
+# The client node snapshots the latest synchronized color + aligned-depth + camera_info
+# triple, posts it to the remote VLA grasp server, then returns the top-K poses.
+
+# Natural-language task description, e.g. "Target: the blue bottle".
+string task_spec
+
+# Override the node's default top_k. Use 0 to keep the node default.
+int32 top_k 0
+
+# Override the node's default num_candidates (how many grasp_region_box
+# proposals the remote VLM emits). Use 0 to keep the node default.
+int32 num_candidates 0
+
+# Optional VLM overrides (empty string = use whatever the server defaults to).
+string provider
+string model
+---
+bool success
+string message
+string run_id
+# Camera frame in which the returned poses are expressed (echoed from the
+# source Image.header.frame_id). Each entry of `grasps` carries this in its
+# own PoseStamped header for convenience.
+string frame_id
+
+# Sorted best-first (matches the server's score ordering).
+geometry_msgs/PoseStamped[] grasps
+float64[] scores
+float64[] widths
