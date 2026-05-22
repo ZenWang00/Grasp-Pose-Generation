@@ -42,11 +42,11 @@ def generate_launch_description():
 
 
         #Myp Application Node
-        Node(
-            package='lio_specific_pkg_ros2',
-            executable='myp_application', 
-            name='myp_application',
-            output='screen'),
+        # Node(
+        #     package='lio_specific_pkg_ros2',
+        #     executable='myp_application', 
+        #     name='myp_application',
+        #     output='screen'),
 
 
 
@@ -99,24 +99,31 @@ def generate_launch_description():
             remappings=[('joint_states', output_topic)]
         ),
 
-
-        # Joystick input (optional)
+        # SpaceMouse input (via spacenav_node, publishes /spacenav/joy etc.)
         Node(
-            package='joy',
-            executable='joy_node',
-            name='joy_node',
-            output='screen',
-            parameters=[{'dev': '/dev/input/js0'}],
-            condition=IfCondition(use_joy),
-        ),
-
-        Node(
-            package='teleop_twist_joy',
-            executable='teleop_node',
-            name='teleop_joy',
+            package='spacenav',
+            executable='spacenav_node',
+            name='spacenav_node',
             output='screen',
             condition=IfCondition(use_joy),
         ),
+        # # Joystick input xbox(optional)
+        # Node(
+        #     package='joy',
+        #     executable='joy_node',
+        #     name='joy_node',
+        #     output='screen',
+        #     parameters=[{'dev': '/dev/input/js0'}],
+        #     condition=IfCondition(use_joy),
+        # ),
+
+        # Node(
+        #     package='teleop_twist_joy',
+        #     executable='teleop_node',
+        #     name='teleop_joy',
+        #     output='screen',
+        #     condition=IfCondition(use_joy),
+        # ),
 
         Node(
             package='lio_teleop',
@@ -124,14 +131,35 @@ def generate_launch_description():
             name='joy_driver',
             output='screen',
             condition=IfCondition(use_joy),
+            remappings=[('/joy', '/spacenav/joy')],
         ),
 
-        # Velocity Controller Node
+        # Rail Follower Node — projects joystick velocity onto pre-grasp path
+        Node(
+            package='rail_follower',
+            executable='rail_follower_node',
+            name='rail_follower',
+            output='screen',
+            condition=IfCondition(use_joy),
+            parameters=[{
+                'pre_grasp_offset_m': 0.15,
+                'path_num_points': 200,
+                'control_rate_hz': 50.0,
+                'rail_toggle_button': 1,
+                'base_frame_id': 'LIO_robot_base_link',
+                'gripper_frame_id': 'lio_gripper_joint',
+                'joy_topic': '/spacenav/joy',
+                'grasp_topic': '/grasp_pose_client/best_grasp',
+            }],
+        ),
+
+        # Velocity Controller Node — consumes filtered velocity from rail_follower
         Node(
             package='lio_teleop',
             executable='velocity_controller',
             name='velocity_controller',
-            output='screen'
+            output='screen',
+            remappings=[('/commanded_vel', '/commanded_vel_filtered')],
         ),
 
 
