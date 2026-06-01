@@ -41,8 +41,8 @@ def generate_launch_description() -> LaunchDescription:
         launch_arguments={
             'align_depth.enable':          'true',
             'pointcloud.enable':           'false',
-            'depth_module.depth_profile':  '640,480,6',
-            'rgb_camera.color_profile':    '640,480,6',
+            'depth_module.depth_profile':  '848,480,6',
+            'rgb_camera.color_profile':    '848,480,6',
         }.items(),
     )
 

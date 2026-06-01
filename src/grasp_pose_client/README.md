@@ -107,6 +107,30 @@ e.g. `camera_color_optical_frame`):
 The PoseStamped's x-axis points along the gripper's base (closing direction), and
 its z-axis is the approach direction Contact-GraspNet emits.
 
+### Verifying the TF transform (camera frame vs base frame)
+
+The node also publishes the **untransformed** camera-frame grasp alongside the
+base-frame one, plus TF frames so you can confirm the transform is correct:
+
+- `PoseStamped` on `/grasp_pose_client/best_grasp_camera` and `PoseArray` on
+  `/grasp_pose_client/grasps_camera` — the server's raw output in
+  `camera_color_optical_frame`, with **no TF applied**.
+- TF frames `grasp_best` (child of the robot base) and `grasp_best_cam` (child of
+  `camera_color_optical_frame`), re-broadcast at 10 Hz. Enable the **TF** display
+  to see the full X/Y/Z axis triad instead of a single Pose arrow.
+
+How to read it (with the arm held still after a grasp request):
+
+- `best_grasp` (base frame) and `best_grasp_camera` (camera frame) Pose arrows, and
+  the `grasp_best` / `grasp_best_cam` TF triads, must **overlap exactly**.
+- If they do **not** overlap → the client's manual `_transform_to_base` math
+  disagrees with tf2; the bug is in the client, not the camera calibration.
+- If they **do** overlap but the grasp still points the wrong way physically → the
+  TF chain is consistent and the error is in the static
+  `lio_gripper_interface_link → camera_link` calibration (the `cam_q*` launch args).
+- Remember the big Pose arrow is the **X axis (closing direction)**, not the
+  approach axis; use the TF triad's **Z axis** to judge the approach direction.
+
 ## Parameters (override via launch args or `ros2 param set`)
 
 | name | default | meaning |
@@ -129,6 +153,9 @@ its z-axis is the approach direction Contact-GraspNet emits.
 | service | `~/request_grasp` | `grasp_pose_client_msgs/srv/RequestGrasp` |
 | topic out | `~/best_grasp` | `geometry_msgs/PoseStamped` |
 | topic out | `~/grasps` | `geometry_msgs/PoseArray` |
+| topic out | `~/best_grasp_camera` | `geometry_msgs/PoseStamped` (raw camera frame, debug) |
+| topic out | `~/grasps_camera` | `geometry_msgs/PoseArray` (raw camera frame, debug) |
+| tf out | `grasp_best`, `grasp_best_cam` | `tf2` frames (debug) |
 | topic in | `<color_topic>` | `sensor_msgs/Image` |
 | topic in | `<depth_topic>` | `sensor_msgs/Image` |
 | topic in | `<camera_info_topic>` | `sensor_msgs/CameraInfo` |

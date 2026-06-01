@@ -21,7 +21,7 @@ from rclpy.time import Time
 
 import tf2_ros
 from sensor_msgs.msg import CameraInfo, Image
-from geometry_msgs.msg import Pose, PoseArray, PoseStamped
+from geometry_msgs.msg import Pose, PoseArray, PoseStamped, TransformStamped
 from std_msgs.msg import Header
 from std_srvs.srv import Trigger
 
@@ -138,6 +138,28 @@ class GraspPoseClientNode(Node):
             PoseArray, "~/grasps", latched_qos
         )
 
+        # Debug verification: republish the server's RAW camera-frame poses
+        # (no TF applied) alongside the base-frame poses above. With TF active
+        # these must overlap exactly in RViz; a mismatch isolates the bug to the
+        # client transform rather than the camera mount calibration.
+        self._best_pose_cam_pub = self.create_publisher(
+            PoseStamped, "~/best_grasp_camera", latched_qos
+        )
+        self._pose_array_cam_pub = self.create_publisher(
+            PoseArray, "~/grasps_camera", latched_qos
+        )
+
+        # Broadcast the best grasp as TF frames so RViz's TF display shows the
+        # full X/Y/Z axis triad (X=closing, Z=approach), not just a Pose arrow.
+        self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
+        self._grasp_tf_lock = threading.Lock()
+        self._grasp_tfs: list[tuple[str, str, Pose]] = []
+        self.create_timer(
+            0.1,
+            self._broadcast_grasp_tfs,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+
         # Service ---------------------------------------------------------------------
         srv_group = MutuallyExclusiveCallbackGroup()
         self._service = self.create_service(
@@ -233,6 +255,16 @@ class GraspPoseClientNode(Node):
             "frame_id": publish_frame_id,
         })()
         self._publish_visualisation(fake_response)
+
+        # Debug: raw camera-frame overlay + grasp TF frames for RViz verification.
+        cam_best = self._publish_debug_camera(result.grasps, result.frame_id, stamp)
+        self._set_grasp_tfs(
+            base_pose=grasps_msgs[0].pose,
+            base_frame=publish_frame_id,
+            cam_pose=cam_best.pose if cam_best is not None else None,
+            cam_frame=result.frame_id,
+        )
+
         self.get_logger().info(
             f"poll_publish: published {len(grasps_msgs)} grasp(s) in frame '{publish_frame_id}', "
             f"best score={scores[0]:.4f}"
@@ -385,6 +417,68 @@ class GraspPoseClientNode(Node):
         pose_array.poses = [item.pose for item in response.grasps]
         self._pose_array_pub.publish(pose_array)
 
+    def _publish_debug_camera(
+        self,
+        raw_entries: list[dict],
+        camera_frame_id: str,
+        stamp,
+    ) -> Optional[PoseStamped]:
+        """Publish the server's untransformed camera-frame poses for RViz overlap checks.
+
+        Returns the best camera-frame PoseStamped (or None if nothing usable).
+        """
+        cam_msgs: list[PoseStamped] = []
+        for entry in raw_entries:
+            ps = self._build_pose_stamped(entry, stamp=stamp, frame_id=camera_frame_id)
+            if ps is not None:
+                cam_msgs.append(ps)
+        if not cam_msgs:
+            return None
+
+        self._best_pose_cam_pub.publish(cam_msgs[0])
+        pose_array = PoseArray()
+        pose_array.header = Header(stamp=cam_msgs[0].header.stamp, frame_id=camera_frame_id)
+        pose_array.poses = [m.pose for m in cam_msgs]
+        self._pose_array_cam_pub.publish(pose_array)
+        return cam_msgs[0]
+
+    def _set_grasp_tfs(
+        self,
+        *,
+        base_pose: Optional[Pose],
+        base_frame: str,
+        cam_pose: Optional[Pose],
+        cam_frame: str,
+    ) -> None:
+        """Stash the latest best grasp so the timer can keep its TF frames alive."""
+        tfs: list[tuple[str, str, Pose]] = []
+        if base_pose is not None:
+            tfs.append(("grasp_best", base_frame, base_pose))
+        if cam_pose is not None:
+            tfs.append(("grasp_best_cam", cam_frame, cam_pose))
+        with self._grasp_tf_lock:
+            self._grasp_tfs = tfs
+
+    def _broadcast_grasp_tfs(self) -> None:
+        """Timer callback: re-broadcast the best grasp TF frames with a fresh stamp."""
+        with self._grasp_tf_lock:
+            tfs = list(self._grasp_tfs)
+        if not tfs:
+            return
+        now = self.get_clock().now().to_msg()
+        msgs: list[TransformStamped] = []
+        for child_frame, parent_frame, pose in tfs:
+            tf = TransformStamped()
+            tf.header.stamp = now
+            tf.header.frame_id = parent_frame
+            tf.child_frame_id = child_frame
+            tf.transform.translation.x = pose.position.x
+            tf.transform.translation.y = pose.position.y
+            tf.transform.translation.z = pose.position.z
+            tf.transform.rotation = pose.orientation
+            msgs.append(tf)
+        self._tf_broadcaster.sendTransform(msgs)
+
     # ------------------------------------------------------------------------------
     # Service handlers
     # ------------------------------------------------------------------------------
@@ -526,6 +620,16 @@ class GraspPoseClientNode(Node):
         response.widths = widths
 
         self._publish_visualisation(response)
+
+        # Debug: raw camera-frame overlay + grasp TF frames for RViz verification.
+        cam_best = self._publish_debug_camera(result.grasps, result.frame_id, stamp)
+        self._set_grasp_tfs(
+            base_pose=response.grasps[0].pose,
+            base_frame=publish_frame_id,
+            cam_pose=cam_best.pose if cam_best is not None else None,
+            cam_frame=result.frame_id,
+        )
+
         self.get_logger().info(
             f"published {len(grasps_msgs)} grasp(s), best score={scores[0]:.4f}, "
             f"width={widths[0]:.4f}m"
