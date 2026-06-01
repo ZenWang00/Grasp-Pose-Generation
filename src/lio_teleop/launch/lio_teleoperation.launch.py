@@ -38,6 +38,7 @@ def generate_launch_description():
         DeclareLaunchArgument('output', default_value='/ik_interface/joint_states_sim'),    #can be /ik_interface/joint_states_sim in simulation or /ik_interface/joint_states_lio for physical robot
         DeclareLaunchArgument('panda_ik', default_value='true'),
         DeclareLaunchArgument('node_start_delay', default_value='1.0'),
+        DeclareLaunchArgument('sm_to_base_rpy', default_value='[0.0, 0.0, 0.0]'),
 
 
 
@@ -132,6 +133,7 @@ def generate_launch_description():
             output='screen',
             condition=IfCondition(use_joy),
             remappings=[('/joy', '/spacenav/joy')],
+            parameters=[{'sm_to_base_rpy': LaunchConfiguration('sm_to_base_rpy')}],
         ),
 
         # Rail Follower Node — projects joystick velocity onto pre-grasp path
@@ -145,10 +147,12 @@ def generate_launch_description():
                 'pre_grasp_offset_m': 0.15,
                 'path_num_points': 200,
                 'control_rate_hz': 50.0,
-                'rail_toggle_button': 1,
+                'rail_button': 1,
+                'long_press_s': 0.5,
                 'base_frame_id': 'LIO_robot_base_link',
-                'gripper_frame_id': 'lio_gripper_joint',
+                'gripper_frame_id': 'lio_tcp_link',
                 'joy_topic': '/spacenav/joy',
+                'rail_speed_m_s': 0.05,
                 'grasp_topic': '/grasp_pose_client/best_grasp',
             }],
         ),

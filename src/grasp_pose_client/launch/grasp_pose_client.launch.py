@@ -41,8 +41,13 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "sync_slop_s",
-            default_value="0.05",
+            default_value="0.2",
             description="ApproximateTimeSynchronizer slop in seconds.",
+        ),
+        DeclareLaunchArgument(
+            "sync_queue_size",
+            default_value="30",
+            description="ApproximateTimeSynchronizer queue size.",
         ),
         DeclareLaunchArgument(
             "request_timeout_s",
@@ -79,25 +84,25 @@ def generate_launch_description() -> LaunchDescription:
             default_value="LIO_robot_base_link",
             description="Robot base TF frame for the gripper→base transform.",
         ),
-        # Static TF: tis_cam → camera_link
-        # Fills the gap between the robot URDF TF tree and the RealSense driver TF tree.
-        # Set x/y/z (meters) and qx/qy/qz/qw to match the physical mounting offset.
-        # Until you measure it precisely, leave as identity (zeros + 0 0 0 1).
-        DeclareLaunchArgument("cam_x",  default_value="0.0"),
+        # Static TF: lio_gripper_interface_link → camera_link
+        # Camera is mounted upright (screw side down). Ry(-90°) aligns camera_link +X with
+        # +Z_gripper_interface_link (forward). Translation: x=-0.10, z=+0.052 (meters).
+        # Equivalent to: static_transform_publisher -0.10 0 0.052 0 -1.5708 0 lio_gripper_interface_link camera_link
+        DeclareLaunchArgument("cam_x",  default_value="-0.1"),
         DeclareLaunchArgument("cam_y",  default_value="0.0"),
-        DeclareLaunchArgument("cam_z",  default_value="0.0"),
-        DeclareLaunchArgument("cam_qx", default_value="0.0"),
-        DeclareLaunchArgument("cam_qy", default_value="0.0"),
-        DeclareLaunchArgument("cam_qz", default_value="0.0"),
-        DeclareLaunchArgument("cam_qw", default_value="1.0"),
+        DeclareLaunchArgument("cam_z",  default_value="0.052"),
+        DeclareLaunchArgument("cam_qx", default_value="-0.5"),
+        DeclareLaunchArgument("cam_qy", default_value="-0.5"),   # Ry(-90°) @ Rz(-90°)
+        DeclareLaunchArgument("cam_qz", default_value="-0.5"),
+        DeclareLaunchArgument("cam_qw", default_value="0.5"),
     ]
 
-    # Bridges the robot URDF TF tree (tis_cam) to the RealSense driver TF tree (camera_link).
-    # Transform: tis_cam → camera_link  (parent → child)
+    # Bridges the robot URDF TF tree (lio_gripper_interface_link) to the RealSense driver TF tree (camera_link).
+    # Transform: lio_gripper_interface_link → camera_link  (parent → child)
     camera_static_tf = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
-        name="tis_cam_to_camera_link",
+        name="gripper_to_camera_link",
         arguments=[
             LaunchConfiguration("cam_x"),
             LaunchConfiguration("cam_y"),
@@ -106,8 +111,8 @@ def generate_launch_description() -> LaunchDescription:
             LaunchConfiguration("cam_qy"),
             LaunchConfiguration("cam_qz"),
             LaunchConfiguration("cam_qw"),
-            "tis_cam",        # parent frame (in robot URDF)
-            "camera_link",    # child frame  (published by realsense2_camera driver)
+            "lio_gripper_interface_link",  # parent frame (in robot URDF)
+            "camera_link",                 # child frame  (published by realsense2_camera driver)
         ],
     )
 
@@ -122,6 +127,7 @@ def generate_launch_description() -> LaunchDescription:
             "depth_topic": LaunchConfiguration("depth_topic"),
             "camera_info_topic": LaunchConfiguration("camera_info_topic"),
             "sync_slop_s": LaunchConfiguration("sync_slop_s"),
+            "sync_queue_size": LaunchConfiguration("sync_queue_size"),
             "request_timeout_s": LaunchConfiguration("request_timeout_s"),
             "default_top_k": LaunchConfiguration("default_top_k"),
             "default_num_candidates": LaunchConfiguration("default_num_candidates"),

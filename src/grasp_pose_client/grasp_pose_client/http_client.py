@@ -108,6 +108,84 @@ def post_grasp(
     return GraspResult.from_json(payload)
 
 
+def upload_capture(
+    *,
+    server_url: str,
+    rgb_png_bytes: bytes,
+    depth_npy_bytes: bytes,
+    K_json: str,
+    frame_id: str,
+    timeout_s: float = 10.0,
+) -> dict[str, Any]:
+    """POST rgb+depth+K to /upload_capture; returns the server JSON payload."""
+    url = server_url.rstrip("/") + "/upload_capture"
+    files = {
+        "rgb": ("rgb.png", rgb_png_bytes, "image/png"),
+        "depth": ("depth.npy", depth_npy_bytes, "application/octet-stream"),
+    }
+    data: dict[str, Any] = {"K": K_json, "frame_id": frame_id}
+    try:
+        response = requests.post(url, files=files, data=data, timeout=timeout_s)
+    except requests.RequestException as exc:
+        raise GraspServerError(f"HTTP request failed: {exc}") from exc
+    if response.status_code != 200:
+        snippet = response.text[:500] if response.text else ""
+        try:
+            body = response.json()
+        except Exception:
+            body = snippet
+        raise GraspServerError(
+            f"server returned HTTP {response.status_code}: {snippet}",
+            status_code=response.status_code,
+            body=body,
+        )
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise GraspServerError(f"server response was not JSON: {exc}") from exc
+
+
+def poll_capture_request(server_url: str, *, timeout_s: float = 2.0) -> bool:
+    """Poll ``GET /poll_capture_request``; returns True if the Web UI requested a capture."""
+    url = server_url.rstrip("/") + "/poll_capture_request"
+    try:
+        response = requests.get(url, timeout=timeout_s)
+        if response.status_code == 200:
+            return bool(response.json().get("requested", False))
+    except requests.RequestException:
+        pass
+    return False
+
+
+def push_frame(server_url: str, jpeg_bytes: bytes, *, timeout_s: float = 0.5) -> None:
+    """POST a JPEG frame to ``/push_frame`` for the live Web UI stream (best-effort)."""
+    url = server_url.rstrip("/") + "/push_frame"
+    try:
+        requests.post(url, files={"frame": ("frame.jpg", jpeg_bytes, "image/jpeg")}, timeout=timeout_s)
+    except requests.RequestException:
+        pass
+
+
+def poll_publish(server_url: str, *, timeout_s: float = 2.0) -> "GraspResult | None":
+    """Poll ``GET /poll_publish``; returns a GraspResult if the UI triggered a publish, else None."""
+    url = server_url.rstrip("/") + "/poll_publish"
+    try:
+        response = requests.get(url, timeout=timeout_s)
+    except requests.RequestException:
+        return None
+    if response.status_code == 404:
+        return None
+    if response.status_code != 200:
+        return None
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return GraspResult.from_json(payload)
+
+
 def get_health(server_url: str, *, timeout_s: float = 5.0) -> dict[str, Any]:
     """Probe ``GET /health``; useful at node startup to fail fast on misconfiguration."""
     url = server_url.rstrip("/") + "/health"

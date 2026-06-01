@@ -16,20 +16,21 @@ import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
-from rclpy.qos import QoSPresetProfiles, QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSPresetProfiles, QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.time import Time
 
 import tf2_ros
 from sensor_msgs.msg import CameraInfo, Image
 from geometry_msgs.msg import Pose, PoseArray, PoseStamped
 from std_msgs.msg import Header
+from std_srvs.srv import Trigger
 
 import message_filters
 from cv_bridge import CvBridge
 
 from grasp_pose_client_msgs.srv import RequestGrasp
 
-from .http_client import GraspServerError, get_health, post_grasp
+from .http_client import GraspServerError, get_health, poll_capture_request, poll_publish, post_grasp, upload_capture
 from .image_conversion import (
     ImageConversionError,
     camera_info_to_K_json,
@@ -91,8 +92,13 @@ class GraspPoseClientNode(Node):
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
-        # QoS: sensor data is high-rate + lossy, so use the canonical sensor profile.
-        sensor_qos = QoSPresetProfiles.SENSOR_DATA.value
+        # Match the realsense2_camera driver's RELIABLE QoS (SENSOR_DATA preset is
+        # BEST_EFFORT which is incompatible with the driver's publisher).
+        sensor_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=5,
+        )
 
         color_topic = self.get_parameter("color_topic").value
         depth_topic = self.get_parameter("depth_topic").value
@@ -123,6 +129,7 @@ class GraspPoseClientNode(Node):
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
             history=HistoryPolicy.KEEP_LAST,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         self._best_pose_pub = self.create_publisher(
             PoseStamped, "~/best_grasp", latched_qos
@@ -139,6 +146,15 @@ class GraspPoseClientNode(Node):
             self._handle_request_grasp,
             callback_group=srv_group,
         )
+        self._upload_service = self.create_service(
+            Trigger,
+            "~/upload_capture",
+            self._handle_upload_capture,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+
+        # Poll /poll_publish at 2 Hz to pick up results triggered from the Web UI.
+        self.create_timer(0.5, self._poll_publish, callback_group=MutuallyExclusiveCallbackGroup())
 
         self.get_logger().info(
             f"grasp_pose_client ready: server_url={self._server_url}, "
@@ -173,13 +189,63 @@ class GraspPoseClientNode(Node):
                 "Inspect /health on the server for details."
             )
 
-    def _lookup_T_base_camera(self, stamp) -> Optional[np.ndarray]:
-        """Look up camera→base transform at the image timestamp; return as 4×4 numpy array or None."""
+    def _poll_publish(self) -> None:
+        """Timer callback: handle Web UI capture requests and publish triggers."""
+        if poll_capture_request(self._server_url):
+            self._do_upload_capture()
+
+        result = poll_publish(self._server_url)
+        if result is None:
+            return
+
+        self.get_logger().info(
+            f"poll_publish: received run_id={result.run_id}, {len(result.grasps)} grasp(s)"
+        )
+
+        T_base_camera = self._lookup_T_base_camera()
+        publish_frame_id = self._robot_base_frame_id if T_base_camera is not None else result.frame_id
+        stamp = self.get_clock().now().to_msg()
+
+        grasps_msgs: list[PoseStamped] = []
+        scores: list[float] = []
+        widths: list[float] = []
+        for entry in result.grasps:
+            pose_data = (
+                self._transform_to_base(entry, T_base_camera)
+                if T_base_camera is not None
+                else entry
+            )
+            pose_stamped = self._build_pose_stamped(pose_data, stamp=stamp, frame_id=publish_frame_id)
+            if pose_stamped is None:
+                continue
+            grasps_msgs.append(pose_stamped)
+            scores.append(float(entry.get("score", 0.0)))
+            width_value = entry.get("width_m")
+            widths.append(float(width_value) if width_value is not None else float("nan"))
+
+        if not grasps_msgs:
+            self.get_logger().warn("poll_publish: no usable grasps in result")
+            return
+
+        # Reuse the visualisation publisher so rail_follower gets ~/best_grasp.
+        fake_response = type("R", (), {
+            "grasps": grasps_msgs,
+            "frame_id": publish_frame_id,
+        })()
+        self._publish_visualisation(fake_response)
+        self.get_logger().info(
+            f"poll_publish: published {len(grasps_msgs)} grasp(s) in frame '{publish_frame_id}', "
+            f"best score={scores[0]:.4f}"
+        )
+
+    def _lookup_T_base_camera(self, stamp=None) -> Optional[np.ndarray]:
+        """Look up camera→base transform; stamp=None uses the latest available TF."""
+        tf_time = Time.from_msg(stamp) if stamp is not None else Time()
         try:
             ts = self._tf_buffer.lookup_transform(
                 self._robot_base_frame_id,
                 self._gripper_frame_id,
-                Time.from_msg(stamp),
+                tf_time,
                 timeout=rclpy.duration.Duration(seconds=self._tf_timeout_s),
             )
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
@@ -320,8 +386,46 @@ class GraspPoseClientNode(Node):
         self._pose_array_pub.publish(pose_array)
 
     # ------------------------------------------------------------------------------
-    # Service handler
+    # Service handlers
     # ------------------------------------------------------------------------------
+    def _do_upload_capture(self) -> bool:
+        """Take a snapshot and upload it to the server. Returns True on success."""
+        try:
+            color_msg, depth_msg, info_msg = self._take_snapshot()
+        except RuntimeError as exc:
+            self.get_logger().warn(f"upload_capture: {exc}")
+            return False
+        try:
+            rgb_png, _ = color_msg_to_png_bytes(color_msg, self._bridge)
+            depth_npy, _ = depth_msg_to_meters_npy_bytes(depth_msg, self._bridge)
+            K_json = camera_info_to_K_json(info_msg)
+        except ImageConversionError as exc:
+            self.get_logger().error(f"upload_capture: image conversion failed: {exc}")
+            return False
+        frame_id = color_msg.header.frame_id or "camera_color_optical_frame"
+        try:
+            upload_capture(
+                server_url=self._server_url,
+                rgb_png_bytes=rgb_png,
+                depth_npy_bytes=depth_npy,
+                K_json=K_json,
+                frame_id=frame_id,
+            )
+        except GraspServerError as exc:
+            self.get_logger().error(f"upload_capture: upload failed: {exc}")
+            return False
+        self.get_logger().info(f"upload_capture: uploaded frame_id={frame_id}")
+        return True
+
+    def _handle_upload_capture(
+        self,
+        request: Trigger.Request,
+        response: Trigger.Response,
+    ) -> Trigger.Response:
+        response.success = self._do_upload_capture()
+        response.message = "capture uploaded" if response.success else "capture failed (see logs)"
+        return response
+
     def _handle_request_grasp(
         self,
         request: RequestGrasp.Request,

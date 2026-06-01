@@ -65,6 +65,22 @@ def color_msg_to_png_bytes(color_msg, cv_bridge_instance) -> Tuple[bytes, Tuple[
     return buf.tobytes(), (int(cv_image.shape[0]), int(cv_image.shape[1]))
 
 
+def color_msg_to_jpeg_bytes(
+    color_msg, cv_bridge_instance, *, quality: int = 75
+) -> bytes:
+    """Encode a color frame as JPEG bytes (for low-latency streaming)."""
+    encoding = getattr(color_msg, "encoding", "")
+    if encoding not in _SUPPORTED_RGB_ENCODINGS:
+        raise ImageConversionError(
+            f"Unsupported color encoding {encoding!r}; expected one of {sorted(_SUPPORTED_RGB_ENCODINGS)}."
+        )
+    cv_image = cv_bridge_instance.imgmsg_to_cv2(color_msg, desired_encoding="bgr8")
+    ok, buf = cv2.imencode(".jpg", cv_image, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        raise ImageConversionError("cv2.imencode failed to produce a JPEG buffer.")
+    return buf.tobytes()
+
+
 def depth_msg_to_meters_npy_bytes(depth_msg, cv_bridge_instance) -> Tuple[bytes, Tuple[int, int]]:
     """Decode a ``sensor_msgs/Image`` depth frame as float32 meters, serialize as ``.npy`` bytes.
 
@@ -104,11 +120,12 @@ def camera_info_to_K_json(camera_info_msg) -> str:
     if not np.all(np.isfinite(K)):
         raise ImageConversionError("CameraInfo.k contains non-finite entries.")
     if abs(K[2, 2] - 1.0) > 1e-6:
-        # Some drivers leave K all-zero before the camera is open; we surface a clearer error.
         raise ImageConversionError(
             f"CameraInfo.k[2,2] should be 1.0, got {K[2, 2]:.6f}. "
             "Is the camera actually streaming?"
         )
+    W = getattr(camera_info_msg, "width", 0)
+    H = getattr(camera_info_msg, "height", 0)
     return json.dumps(K.tolist())
 
 

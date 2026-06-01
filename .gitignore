@@ -23,3 +23,10 @@ __pycache__/
 *.pth
 *.onnx
 *.weights
+
+# Rust build artifacts
+target/
+*.d
+*.rlib
+*.rmeta
+*.so
