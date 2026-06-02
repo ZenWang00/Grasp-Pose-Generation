@@ -44,6 +44,16 @@ def _quat_to_rotation_matrix(orientation) -> np.ndarray:
     ], dtype=np.float64)
 
 
+def _quat_to_rotation_matrix_from_array(q: np.ndarray) -> np.ndarray:
+    """Expects a normalized [x, y, z, w] quaternion array."""
+    x, y, z, w = q
+    return np.array([
+        [1 - 2*(y*y + z*z),   2*(x*y - w*z),   2*(x*z + w*y)],
+        [  2*(x*y + w*z), 1 - 2*(x*x + z*z),   2*(y*z - w*x)],
+        [  2*(x*z - w*y),   2*(y*z + w*x), 1 - 2*(x*x + y*y)],
+    ], dtype=np.float64)
+
+
 def _quat_multiply(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     ax, ay, az, aw = a
     bx, by, bz, bw = b
@@ -221,7 +231,7 @@ class RailFollowerNode(Node):
         if norm > 1e-9:
             grasp_quat = grasp_quat / norm
 
-        R = _quat_to_rotation_matrix(grasp.orientation)
+        R = _quat_to_rotation_matrix_from_array(grasp_quat)
         approach_dir = R[:, 2]
         approach_norm = np.linalg.norm(approach_dir)
         if approach_norm > 1e-9:

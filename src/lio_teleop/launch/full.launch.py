@@ -19,7 +19,7 @@ def generate_launch_description() -> LaunchDescription:
     declared = [
         DeclareLaunchArgument(
             'physical_robot',
-            default_value='true',
+            default_value='false',
             description='Connect to the physical robot (true) or simulate (false).',
         ),
         DeclareLaunchArgument(

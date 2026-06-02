@@ -67,6 +67,11 @@ class GraspPoseClientNode(Node):
         self.declare_parameter("gripper_frame_id", "camera_color_optical_frame")
         self.declare_parameter("robot_base_frame_id", "LIO_robot_base_link")
         self.declare_parameter("tf_timeout_s", 0.2)
+        # Constant correction (meters) added to every grasp position AFTER it has been
+        # transformed into the robot base frame. Use this to absorb a systematic
+        # hand-eye / extrinsic bias. Axes follow LIO_robot_base_link:
+        #   +x / -x , +y = toward robot (back) / -y = forward , +z = up.
+        self.declare_parameter("grasp_offset_base_xyz", [0.0, 0.0, 0.0])
 
         self._server_url: str = self.get_parameter("server_url").value
         self._sync_queue_size: int = int(self.get_parameter("sync_queue_size").value)
@@ -80,6 +85,13 @@ class GraspPoseClientNode(Node):
         self._gripper_frame_id: str = str(self.get_parameter("gripper_frame_id").value)
         self._robot_base_frame_id: str = str(self.get_parameter("robot_base_frame_id").value)
         self._tf_timeout_s: float = float(self.get_parameter("tf_timeout_s").value)
+        _off = list(self.get_parameter("grasp_offset_base_xyz").value or [0.0, 0.0, 0.0])
+        if len(_off) != 3:
+            self.get_logger().warn(
+                f"grasp_offset_base_xyz must have 3 elements, got {_off}; ignoring."
+            )
+            _off = [0.0, 0.0, 0.0]
+        self._grasp_offset_base: np.ndarray = np.array(_off, dtype=np.float64)
 
         # Internal state --------------------------------------------------------------
         self._bridge = CvBridge()
@@ -233,7 +245,7 @@ class GraspPoseClientNode(Node):
         widths: list[float] = []
         for entry in result.grasps:
             pose_data = (
-                self._transform_to_base(entry, T_base_camera)
+                self._transform_to_base(entry, T_base_camera, self._grasp_offset_base)
                 if T_base_camera is not None
                 else entry
             )
@@ -307,8 +319,13 @@ class GraspPoseClientNode(Node):
     def _transform_to_base(
         entry: dict,
         T_base_camera: np.ndarray,
+        offset_base: Optional[np.ndarray] = None,
     ) -> dict:
-        """Apply T_base_camera to a camera-frame grasp entry, returning base-frame position/quaternion."""
+        """Apply T_base_camera to a camera-frame grasp entry, returning base-frame position/quaternion.
+
+        ``offset_base`` (meters, optional) is a constant correction added to the
+        resulting base-frame position to absorb a systematic extrinsic bias.
+        """
         pose_4x4 = entry.get("pose_4x4")
         if pose_4x4 is not None:
             T_grasp_cam = np.asarray(pose_4x4, dtype=np.float64)
@@ -330,6 +347,8 @@ class GraspPoseClientNode(Node):
         T_grasp_base = T_base_camera @ T_grasp_cam
         R_base = T_grasp_base[:3, :3]
         t_base = T_grasp_base[:3, 3]
+        if offset_base is not None:
+            t_base = t_base + offset_base
 
         # Rotation matrix → quaternion (Shepperd's method)
         trace = R_base[0, 0] + R_base[1, 1] + R_base[2, 2]
@@ -595,7 +614,7 @@ class GraspPoseClientNode(Node):
         scores: list[float] = []
         widths: list[float] = []
         for entry in result.grasps:
-            pose_data = self._transform_to_base(entry, T_base_camera) if T_base_camera is not None else entry
+            pose_data = self._transform_to_base(entry, T_base_camera, self._grasp_offset_base) if T_base_camera is not None else entry
             pose_stamped = self._build_pose_stamped(
                 pose_data, stamp=stamp, frame_id=publish_frame_id
             )

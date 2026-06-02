@@ -135,6 +135,12 @@ def generate_launch_description() -> LaunchDescription:
             "probe_health_on_startup": LaunchConfiguration("probe_health_on_startup"),
             "gripper_frame_id": LaunchConfiguration("gripper_frame_id"),
             "robot_base_frame_id": LaunchConfiguration("robot_base_frame_id"),
+            # Systematic extrinsic-bias correction added to the base-frame grasp.
+            # Observed bias: gripper landed ~5cm right, ~3cm up, ~3cm back of target.
+            # Base axes: +y = back (toward robot), -y = forward, +z = up, right = -x.
+            # Correction = -bias  →  x:+0.05 (push left), y:-0.03 (push forward), z:-0.03 (push down).
+            # If the x error grows instead of shrinking, flip the sign of the first value.
+            "grasp_offset_base_xyz": [0.05, -0.03, -0.03],
         }],
     )
 
