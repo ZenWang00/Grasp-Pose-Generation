@@ -13,8 +13,9 @@ Then:
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -91,6 +92,13 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("cam_x",  default_value="-0.1"),
         DeclareLaunchArgument("cam_y",  default_value="0.0"),
         DeclareLaunchArgument("cam_z",  default_value="0.052"),
+        DeclareLaunchArgument(
+            "ik_urdf_path",
+            default_value=PathJoinSubstitution([
+                FindPackageShare("panda_ik"), "urdfs", "lio_arm_reframed.urdf"
+            ]),
+            description="URDF for Pinocchio IK feasibility check. Set empty to disable.",
+        ),
         DeclareLaunchArgument("cam_qx", default_value="-0.5"),
         DeclareLaunchArgument("cam_qy", default_value="-0.5"),   # Ry(-90°) @ Rz(-90°)
         DeclareLaunchArgument("cam_qz", default_value="-0.5"),
@@ -141,6 +149,7 @@ def generate_launch_description() -> LaunchDescription:
             # Correction = -bias  →  x:+0.05 (push left), y:-0.03 (push forward), z:-0.03 (push down).
             # If the x error grows instead of shrinking, flip the sign of the first value.
             "grasp_offset_base_xyz": [0.05, -0.03, -0.03],
+            "ik_urdf_path": LaunchConfiguration("ik_urdf_path"),
         }],
     )
 

@@ -20,7 +20,7 @@ from rclpy.qos import QoSPresetProfiles, QoSProfile, ReliabilityPolicy, HistoryP
 from rclpy.time import Time
 
 import tf2_ros
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, Image, JointState
 from geometry_msgs.msg import Pose, PoseArray, PoseStamped, TransformStamped
 from std_msgs.msg import Header
 from std_srvs.srv import Trigger
@@ -30,7 +30,7 @@ from cv_bridge import CvBridge
 
 from grasp_pose_client_msgs.srv import RequestGrasp
 
-from .http_client import GraspServerError, get_health, poll_capture_request, poll_publish, post_grasp, upload_capture
+from .http_client import GraspServerError, get_health, poll_capture_request, poll_publish, post_grasp, submit_ik_result, upload_capture
 from .image_conversion import (
     ImageConversionError,
     camera_info_to_K_json,
@@ -72,8 +72,17 @@ class GraspPoseClientNode(Node):
         # hand-eye / extrinsic bias. Axes follow LIO_robot_base_link:
         #   +x / -x , +y = toward robot (back) / -y = forward , +z = up.
         self.declare_parameter("grasp_offset_base_xyz", [0.0, 0.0, 0.0])
+        self.declare_parameter("ik_urdf_path", "")
+        self.declare_parameter("ik_base_link", "LIO_base_link")
+        self.declare_parameter("ik_tip_link", "lio_tcp_link")
+        self.declare_parameter("ik_max_iter", 200)
+        self.declare_parameter("ik_eps", 1e-4)
+        self.declare_parameter("ik_dt", 0.1)
+        self.declare_parameter("ik_damp", 1e-10)
+        self.declare_parameter("joint_states_topic", "/joint_states")
 
         self._server_url: str = self.get_parameter("server_url").value
+        self._seen_phases: set[str] = set()  # f"{trace_id}:{mode}" already processed
         self._sync_queue_size: int = int(self.get_parameter("sync_queue_size").value)
         self._sync_slop_s: float = float(self.get_parameter("sync_slop_s").value)
         self._request_timeout_s: float = float(self.get_parameter("request_timeout_s").value)
@@ -92,6 +101,16 @@ class GraspPoseClientNode(Node):
             )
             _off = [0.0, 0.0, 0.0]
         self._grasp_offset_base: np.ndarray = np.array(_off, dtype=np.float64)
+        self._ik_base_link: str = str(self.get_parameter("ik_base_link").value)
+        self._ik_tip_link: str = str(self.get_parameter("ik_tip_link").value)
+        self._ik_max_iter: int = int(self.get_parameter("ik_max_iter").value)
+        self._ik_eps: float = float(self.get_parameter("ik_eps").value)
+        self._ik_dt: float = float(self.get_parameter("ik_dt").value)
+        self._ik_damp: float = float(self.get_parameter("ik_damp").value)
+        self._joint_positions: dict[str, float] = {}
+        self._pin_model = None
+        self._pin_data = None
+        self._pin_ee_id: int = -1
 
         # Internal state --------------------------------------------------------------
         self._bridge = CvBridge()
@@ -103,6 +122,13 @@ class GraspPoseClientNode(Node):
         # TF2 buffer for gripper→base lookup ------------------------------------------
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+
+        # JointState subscription for IK seed + Pinocchio IK solver init --------------
+        _joint_states_topic = str(self.get_parameter("joint_states_topic").value)
+        self._joint_state_sub = self.create_subscription(
+            JointState, _joint_states_topic, self._joint_state_cb, 10
+        )
+        self._init_ik_solver()
 
         # Match the realsense2_camera driver's RELIABLE QoS (SENSOR_DATA preset is
         # BEST_EFFORT which is incompatible with the driver's publisher).
@@ -223,6 +249,100 @@ class GraspPoseClientNode(Node):
                 "Inspect /health on the server for details."
             )
 
+    def _joint_state_cb(self, msg: JointState) -> None:
+        for name, pos in zip(msg.name, msg.position):
+            self._joint_positions[name] = float(pos)
+
+    def _init_ik_solver(self) -> None:
+        urdf_path = str(self.get_parameter("ik_urdf_path").value)
+        if not urdf_path:
+            self.get_logger().info("ik_urdf_path not set — IK feasibility check disabled")
+            return
+        try:
+            import pinocchio as pin
+            self._pin_model = pin.buildModelFromUrdf(urdf_path)
+            self._pin_data = self._pin_model.createData()
+            self._pin_ee_id = self._pin_model.getFrameId(self._ik_tip_link)
+            if self._pin_ee_id >= self._pin_model.nframes:
+                raise ValueError(f"tip link '{self._ik_tip_link}' not found in URDF")
+            self.get_logger().info(
+                f"Pinocchio IK ready: {self._ik_base_link}→{self._ik_tip_link} "
+                f"(nq={self._pin_model.nq}, frame_id={self._pin_ee_id})"
+            )
+        except ImportError:
+            self.get_logger().error(
+                "pinocchio not importable — install ros-jazzy-pinocchio and source setup.bash"
+            )
+        except Exception as exc:
+            self.get_logger().error(f"Pinocchio IK solver init failed: {exc}")
+
+    def _pin_solve_ik(self, target_SE3, q0: np.ndarray) -> Optional[np.ndarray]:
+        """Gauss-Newton IK. Returns joint config on convergence, None on failure."""
+        import pinocchio as pin
+        model, data = self._pin_model, self._pin_data
+        q = q0.copy()
+        for _ in range(self._ik_max_iter):
+            pin.forwardKinematics(model, data, q)
+            pin.updateFramePlacements(model, data)
+            err = pin.log6(data.oMf[self._pin_ee_id].inverse() * target_SE3).vector
+            if np.linalg.norm(err) < self._ik_eps:
+                return q
+            J = pin.computeFrameJacobian(model, data, q, self._pin_ee_id, pin.LOCAL)
+            v = J.T @ np.linalg.solve(J @ J.T + self._ik_damp * np.eye(6), err)
+            q = pin.integrate(model, q, v * self._ik_dt)
+            q = np.clip(q, model.lowerPositionLimit, model.upperPositionLimit)
+        return None
+
+    def _check_ik_feasibility(self, grasps: list[dict]) -> list[dict]:
+        if self._pin_model is None:
+            self.get_logger().warn(
+                "IK solver not ready — passing all candidates through",
+                throttle_duration_sec=10.0,
+            )
+            return grasps
+
+        # _gripper_frame_id is the camera optical frame (source of server grasps),
+        # same convention as _lookup_T_base_camera(). T = T_{LIO_base_link←camera}.
+        T = self._lookup_tf_matrix(self._ik_base_link, self._gripper_frame_id)
+        if T is None:
+            self.get_logger().warn(
+                f"TF {self._gripper_frame_id}→{self._ik_base_link} unavailable "
+                "— passing all candidates through",
+                throttle_duration_sec=5.0,
+            )
+            return grasps
+
+        if not self._joint_positions:
+            self.get_logger().warn(
+                "No /joint_states received yet — IK seed is all-zeros; "
+                "reachability result may be inaccurate",
+                throttle_duration_sec=5.0,
+            )
+        import pinocchio as pin
+        q0 = pin.neutral(self._pin_model)
+        for jname in self._pin_model.names[1:]:  # skip universe joint
+            jid = self._pin_model.getJointId(jname)
+            idx = self._pin_model.joints[jid].idx_q
+            q0[idx] = self._joint_positions.get(jname, 0.0)
+
+        passed: list[dict] = []
+        for grasp in grasps:
+            p_ik = self._transform_to_base(grasp, T)
+            pos = np.array(p_ik["position_xyz"])
+            q_xyzw = p_ik["quaternion_xyzw"]
+            # Pinocchio Quaternion takes (w, x, y, z); our dict stores (x, y, z, w)
+            target_SE3 = pin.SE3(
+                pin.Quaternion(q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]).toRotationMatrix(),
+                pos,
+            )
+            if self._pin_solve_ik(target_SE3, q0) is not None:
+                passed.append(grasp)
+
+        self.get_logger().info(
+            f"IK feasibility: {len(passed)}/{len(grasps)} candidates passed"
+        )
+        return passed
+
     def _poll_publish(self) -> None:
         """Timer callback: handle Web UI capture requests and publish triggers."""
         if poll_capture_request(self._server_url):
@@ -232,8 +352,32 @@ class GraspPoseClientNode(Node):
         if result is None:
             return
 
+        phase_key = f"{result.trace_id}:{result.mode}"
+        if phase_key in self._seen_phases:
+            return
+        self._seen_phases.add(phase_key)
+
+        if result.mode == "ik_check":
+            passed = self._check_ik_feasibility(result.grasps)
+            if not passed:
+                self.get_logger().error(
+                    f"[trace={result.trace_id}] all candidates failed IK — nothing submitted"
+                )
+                return
+            try:
+                submit_ik_result(self._server_url, result.run_id, result.trace_id, passed)
+                self.get_logger().info(
+                    f"[trace={result.trace_id}] IK round-trip: "
+                    f"submitted {len(passed)}/{len(result.grasps)} candidates"
+                )
+            except Exception as exc:
+                self.get_logger().error(f"[trace={result.trace_id}] submit_ik_result failed: {exc}")
+            return  # do NOT publish yet; wait for mode="execute" payload
+
+        # mode == "execute": fall through to existing publish + TF logic
         self.get_logger().info(
-            f"poll_publish: received run_id={result.run_id}, {len(result.grasps)} grasp(s)"
+            f"[trace={result.trace_id}] poll_publish: received run_id={result.run_id}, "
+            f"{len(result.grasps)} grasp(s) for execution"
         )
 
         T_base_camera = self._lookup_T_base_camera()
@@ -281,6 +425,33 @@ class GraspPoseClientNode(Node):
             f"poll_publish: published {len(grasps_msgs)} grasp(s) in frame '{publish_frame_id}', "
             f"best score={scores[0]:.4f}"
         )
+
+    def _lookup_tf_matrix(self, target_frame: str, source_frame: str) -> Optional[np.ndarray]:
+        """Return 4x4 T_{target←source} using the latest TF, or None on failure."""
+        try:
+            ts = self._tf_buffer.lookup_transform(
+                target_frame, source_frame, Time(),
+                timeout=rclpy.duration.Duration(seconds=self._tf_timeout_s),
+            )
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException) as exc:
+            self.get_logger().warn(
+                f"TF {source_frame}→{target_frame} failed: {exc}",
+                throttle_duration_sec=5.0,
+            )
+            return None
+        t = ts.transform.translation
+        q = ts.transform.rotation
+        x, y, z, w = q.x, q.y, q.z, q.w
+        R = np.array([
+            [1 - 2*(y*y + z*z),   2*(x*y - w*z),   2*(x*z + w*y)],
+            [  2*(x*y + w*z), 1 - 2*(x*x + z*z),   2*(y*z - w*x)],
+            [  2*(x*z - w*y),   2*(y*z + w*x), 1 - 2*(x*x + y*y)],
+        ], dtype=float)
+        T = np.eye(4)
+        T[:3, :3] = R
+        T[:3, 3] = [t.x, t.y, t.z]
+        return T
 
     def _lookup_T_base_camera(self, stamp=None) -> Optional[np.ndarray]:
         """Look up camera→base transform; stamp=None uses the latest available TF."""

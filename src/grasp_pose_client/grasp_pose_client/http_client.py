@@ -28,6 +28,8 @@ class GraspResult:
     frame_id: str
     elapsed_ms: int
     grasps: list[dict[str, Any]] = field(default_factory=list)
+    mode: str = "execute"   # "execute" | "ik_check"
+    trace_id: str = ""      # logical task ID across IK-check and execute phases
 
     @classmethod
     def from_json(cls, payload: dict[str, Any]) -> "GraspResult":
@@ -37,13 +39,16 @@ class GraspResult:
                 f"Server response 'grasps' must be a list, got {type(grasps).__name__}",
                 body=payload,
             )
+        run_id = str(payload.get("run_id", ""))
         return cls(
             success=True,
-            run_id=str(payload.get("run_id", "")),
+            run_id=run_id,
             run_dir=str(payload.get("run_dir", "")),
             frame_id=str(payload.get("frame_id", "")),
             elapsed_ms=int(payload.get("elapsed_ms", 0) or 0),
             grasps=grasps,
+            mode=str(payload.get("mode", "execute")),
+            trace_id=str(payload.get("trace_id", run_id)),
         )
 
 
@@ -184,6 +189,32 @@ def poll_publish(server_url: str, *, timeout_s: float = 2.0) -> "GraspResult | N
     if not isinstance(payload, dict):
         return None
     return GraspResult.from_json(payload)
+
+
+def submit_ik_result(
+    server_url: str,
+    run_id: str,
+    trace_id: str,
+    grasps: list[dict[str, Any]],
+    *,
+    timeout_s: float = 5.0,
+) -> None:
+    """POST IK-passing grasps back to the server for selection and execution."""
+    url = server_url.rstrip("/") + "/submit_ik_result"
+    try:
+        resp = requests.post(
+            url,
+            json={"run_id": run_id, "trace_id": trace_id, "grasps": grasps},
+            timeout=timeout_s,
+        )
+    except requests.RequestException as exc:
+        raise GraspServerError(f"submit_ik_result request failed: {exc}") from exc
+    if resp.status_code not in (200, 201):
+        snippet = resp.text[:500] if resp.text else ""
+        raise GraspServerError(
+            f"submit_ik_result returned HTTP {resp.status_code}: {snippet}",
+            status_code=resp.status_code,
+        )
 
 
 def get_health(server_url: str, *, timeout_s: float = 5.0) -> dict[str, Any]:

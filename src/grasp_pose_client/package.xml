@@ -16,6 +16,7 @@
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-requests</exec_depend>
+  <exec_depend>pinocchio</exec_depend>
   <exec_depend>grasp_pose_client_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
