@@ -136,39 +136,12 @@ def generate_launch_description():
             parameters=[{'sm_to_base_rpy': LaunchConfiguration('sm_to_base_rpy')}],
         ),
 
-        # Rail Follower Node — projects joystick velocity onto pre-grasp path
-        Node(
-            package='rail_follower',
-            executable='rail_follower_node',
-            name='rail_follower',
-            output='screen',
-            condition=IfCondition(use_joy),
-            parameters=[{
-                'pre_grasp_offset_m': 0.15,
-                'path_num_points': 200,
-                'control_rate_hz': 50.0,
-                'rail_button': 1,
-                'long_press_s': 0.5,
-                'base_frame_id': 'LIO_robot_base_link',
-                'gripper_frame_id': 'lio_tcp_link',
-                'joy_topic': '/spacenav/joy',
-                'rail_speed_m_s': 0.05,
-                'overshoot_dist_m': 0.02,
-                'slowdown_radius_m': 0.08,
-                'min_speed_m_s': 0.008,
-                'stall_timeout_s': 3.0,
-                'stall_min_progress_m': 0.003,
-                'grasp_topic': '/grasp_pose_client/best_grasp',
-            }],
-        ),
-
-        # Velocity Controller Node — consumes filtered velocity from rail_follower
+        # Velocity Controller Node
         Node(
             package='lio_teleop',
             executable='velocity_controller',
             name='velocity_controller',
             output='screen',
-            remappings=[('/commanded_vel', '/commanded_vel_filtered')],
         ),
 
 

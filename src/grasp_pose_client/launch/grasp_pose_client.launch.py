@@ -99,6 +99,11 @@ def generate_launch_description() -> LaunchDescription:
             ]),
             description="URDF for Pinocchio IK feasibility check. Set empty to disable.",
         ),
+        DeclareLaunchArgument(
+            "joint_states_topic",
+            default_value="/ik_interface/joint_states_sim",
+            description="JointState topic used to seed the Pinocchio IK solver.",
+        ),
         DeclareLaunchArgument("cam_qx", default_value="-0.5"),
         DeclareLaunchArgument("cam_qy", default_value="-0.5"),   # Ry(-90°) @ Rz(-90°)
         DeclareLaunchArgument("cam_qz", default_value="-0.5"),
@@ -150,6 +155,7 @@ def generate_launch_description() -> LaunchDescription:
             # If the x error grows instead of shrinking, flip the sign of the first value.
             "grasp_offset_base_xyz": [0.05, -0.03, -0.03],
             "ik_urdf_path": LaunchConfiguration("ik_urdf_path"),
+            "joint_states_topic": LaunchConfiguration("joint_states_topic"),
         }],
     )
 

@@ -78,7 +78,7 @@ class GraspPoseClientNode(Node):
         self.declare_parameter("ik_max_iter", 200)
         self.declare_parameter("ik_eps", 1e-4)
         self.declare_parameter("ik_dt", 0.1)
-        self.declare_parameter("ik_damp", 1e-10)
+        self.declare_parameter("ik_damp", 1e-6)
         self.declare_parameter("joint_states_topic", "/joint_states")
 
         self._server_url: str = self.get_parameter("server_url").value
@@ -171,6 +171,9 @@ class GraspPoseClientNode(Node):
         )
         self._best_pose_pub = self.create_publisher(
             PoseStamped, "~/best_grasp", latched_qos
+        )
+        self._commanded_pose_pub = self.create_publisher(
+            PoseStamped, "/commanded_pose", 10
         )
         self._pose_array_pub = self.create_publisher(
             PoseArray, "~/grasps", latched_qos
@@ -277,10 +280,35 @@ class GraspPoseClientNode(Node):
             self.get_logger().error(f"Pinocchio IK solver init failed: {exc}")
 
     def _pin_solve_ik(self, target_SE3, q0: np.ndarray) -> Optional[np.ndarray]:
-        """Gauss-Newton IK. Returns joint config on convergence, None on failure."""
+        """Two-stage Gauss-Newton IK.
+
+        Stage 1: position-only IK (LOCAL_WORLD_ALIGNED, 3-DOF error) to drive the
+        end-effector near the target position. This is robust to large initial
+        orientation errors (w≈0 quaternions produce log6 vectors with norm≈π that
+        cause the single-stage solver to overshoot and diverge).
+
+        Stage 2: full 6-DOF IK starting from the Stage-1 solution, which is now
+        in a much smaller basin and converges reliably.
+        """
         import pinocchio as pin
         model, data = self._pin_model, self._pin_data
+
+        # ── Stage 1: position only ────────────────────────────────────────────
         q = q0.copy()
+        t_tgt = target_SE3.translation
+        for _ in range(self._ik_max_iter):
+            pin.forwardKinematics(model, data, q)
+            pin.updateFramePlacements(model, data)
+            err3 = t_tgt - data.oMf[self._pin_ee_id].translation
+            if np.linalg.norm(err3) < 1e-3:
+                break
+            J3 = pin.computeFrameJacobian(
+                model, data, q, self._pin_ee_id, pin.LOCAL_WORLD_ALIGNED)[:3]
+            v = J3.T @ np.linalg.solve(J3 @ J3.T + self._ik_damp * np.eye(3), err3)
+            q = pin.integrate(model, q, v * self._ik_dt)
+            q = np.clip(q, model.lowerPositionLimit, model.upperPositionLimit)
+
+        # ── Stage 2: full 6-DOF IK from the position-warm seed ───────────────
         for _ in range(self._ik_max_iter):
             pin.forwardKinematics(model, data, q)
             pin.updateFramePlacements(model, data)
@@ -312,21 +340,38 @@ class GraspPoseClientNode(Node):
             )
             return grasps
 
+        import pinocchio as pin
+        q0 = pin.neutral(self._pin_model)
         if not self._joint_positions:
             self.get_logger().warn(
                 "No /joint_states received yet — IK seed is all-zeros; "
                 "reachability result may be inaccurate",
                 throttle_duration_sec=5.0,
             )
-        import pinocchio as pin
-        q0 = pin.neutral(self._pin_model)
-        for jname in self._pin_model.names[1:]:  # skip universe joint
-            jid = self._pin_model.getJointId(jname)
-            idx = self._pin_model.joints[jid].idx_q
-            q0[idx] = self._joint_positions.get(jname, 0.0)
+        else:
+            matched, total = 0, len(self._pin_model.names) - 1
+            for jname in self._pin_model.names[1:]:  # skip universe joint
+                jid = self._pin_model.getJointId(jname)
+                idx = self._pin_model.joints[jid].idx_q
+                if jname in self._joint_positions:
+                    q0[idx] = self._joint_positions[jname]
+                    matched += 1
+            if matched == 0:
+                self.get_logger().warn(
+                    f"No Pinocchio joint names matched /joint_states "
+                    f"(model joints: {list(self._pin_model.names[1:])}, "
+                    f"received: {list(self._joint_positions.keys())}) "
+                    "— IK seed is all-zeros"
+                )
+            else:
+                self.get_logger().debug(f"IK seed: {matched}/{total} joints matched from /joint_states")
+
+        q_neutral = pin.neutral(self._pin_model)
+        # Seeds to try in order: joint-state seed first, neutral as fallback.
+        seeds = [q0, q_neutral] if np.any(q0 != q_neutral) else [q0]
 
         passed: list[dict] = []
-        for grasp in grasps:
+        for i, grasp in enumerate(grasps):
             p_ik = self._transform_to_base(grasp, T)
             pos = np.array(p_ik["position_xyz"])
             q_xyzw = p_ik["quaternion_xyzw"]
@@ -335,7 +380,13 @@ class GraspPoseClientNode(Node):
                 pin.Quaternion(q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]).toRotationMatrix(),
                 pos,
             )
-            if self._pin_solve_ik(target_SE3, q0) is not None:
+            ok = any(self._pin_solve_ik(target_SE3, s) is not None for s in seeds)
+            self.get_logger().info(
+                f"IK candidate {i}: pos=[{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] "
+                f"quat(xyzw)=[{q_xyzw[0]:.3f},{q_xyzw[1]:.3f},{q_xyzw[2]:.3f},{q_xyzw[3]:.3f}] "
+                f"→ {'PASS' if ok else 'FAIL'}"
+            )
+            if ok:
                 passed.append(grasp)
 
         self.get_logger().info(
@@ -361,9 +412,8 @@ class GraspPoseClientNode(Node):
             passed = self._check_ik_feasibility(result.grasps)
             if not passed:
                 self.get_logger().error(
-                    f"[trace={result.trace_id}] all candidates failed IK — nothing submitted"
+                    f"[trace={result.trace_id}] all candidates failed IK — submitting empty result"
                 )
-                return
             try:
                 submit_ik_result(self._server_url, result.run_id, result.trace_id, passed)
                 self.get_logger().info(
@@ -405,7 +455,7 @@ class GraspPoseClientNode(Node):
             self.get_logger().warn("poll_publish: no usable grasps in result")
             return
 
-        # Reuse the visualisation publisher so rail_follower gets ~/best_grasp.
+        # Publish best grasp for RViz and forward to /commanded_pose for execution.
         fake_response = type("R", (), {
             "grasps": grasps_msgs,
             "frame_id": publish_frame_id,
@@ -595,8 +645,9 @@ class GraspPoseClientNode(Node):
     def _publish_visualisation(self, response: RequestGrasp.Response) -> None:
         if not response.grasps:
             return
-        # Best grasp (also used by downstream planners).
-        self._best_pose_pub.publish(response.grasps[0])
+        best = response.grasps[0]
+        self._best_pose_pub.publish(best)
+        self._commanded_pose_pub.publish(best)
 
         pose_array = PoseArray()
         # All grasps share the same frame_id (server already ensures that).

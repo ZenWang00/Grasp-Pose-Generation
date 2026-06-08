@@ -11,7 +11,7 @@ Override server URL (e.g. server on a remote machine):
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -19,7 +19,7 @@ def generate_launch_description() -> LaunchDescription:
     declared = [
         DeclareLaunchArgument(
             'physical_robot',
-            default_value='false',
+            default_value='true',
             description='Connect to the physical robot (true) or simulate (false).',
         ),
         DeclareLaunchArgument(
@@ -51,9 +51,14 @@ def generate_launch_description() -> LaunchDescription:
             FindPackageShare('grasp_pose_client'), '/launch/grasp_pose_client.launch.py',
         ]),
         launch_arguments={
-            'server_url':     LaunchConfiguration('server_url'),
-            'sync_slop_s':    '0.2',
-            'sync_queue_size': '30',
+            'server_url':         LaunchConfiguration('server_url'),
+            'sync_slop_s':        '0.2',
+            'sync_queue_size':    '30',
+            'joint_states_topic': PythonExpression([
+                "'/ik_interface/joint_states_lio' if '",
+                LaunchConfiguration('physical_robot'),
+                "' == 'true' else '/ik_interface/joint_states_sim'",
+            ]),
         }.items(),
     )
 
