@@ -82,13 +82,17 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "robot_base_frame_id",
-            default_value="LIO_robot_base_link",
-            description="Robot base TF frame for the gripper→base transform.",
+            default_value="LIO_base_link",
+            description="Robot base TF frame for the gripper→base transform. "
+                        "Must match the IK URDF root (LIO_base_link) so that "
+                        "Pinocchio feasibility check and execution use the same frame.",
         ),
         # Static TF: lio_gripper_interface_link → camera_link
-        # Camera is mounted upright (screw side down). Ry(-90°) aligns camera_link +X with
-        # +Z_gripper_interface_link (forward). Translation: x=-0.10, z=+0.052 (meters).
-        # Equivalent to: static_transform_publisher -0.10 0 0.052 0 -1.5708 0 lio_gripper_interface_link camera_link
+        # Hand-eye calibration result (RealSense externally mounted on gripper):
+        #   translation: x=-0.10 m, y=0, z=+0.052 m
+        #   rotation:    RPY(roll=0, pitch=-pi/2, yaw=0)  →  Ry(-90°)
+        #   quaternion:  (qx=0, qy=-0.7071, qz=0, qw=0.7071)
+        # Equivalent CLI: static_transform_publisher -0.10 0 0.052 0 -1.5708 0 lio_gripper_interface_link camera_link
         DeclareLaunchArgument("cam_x",  default_value="-0.1"),
         DeclareLaunchArgument("cam_y",  default_value="0.0"),
         DeclareLaunchArgument("cam_z",  default_value="0.052"),
@@ -104,10 +108,10 @@ def generate_launch_description() -> LaunchDescription:
             default_value="/ik_interface/joint_states_sim",
             description="JointState topic used to seed the Pinocchio IK solver.",
         ),
-        DeclareLaunchArgument("cam_qx", default_value="-0.5"),
-        DeclareLaunchArgument("cam_qy", default_value="-0.5"),   # Ry(-90°) @ Rz(-90°)
-        DeclareLaunchArgument("cam_qz", default_value="-0.5"),
-        DeclareLaunchArgument("cam_qw", default_value="0.5"),
+        DeclareLaunchArgument("cam_qx", default_value="0.0"),
+        DeclareLaunchArgument("cam_qy", default_value="-0.7071067811865476"),  # Ry(-90°)
+        DeclareLaunchArgument("cam_qz", default_value="0.0"),
+        DeclareLaunchArgument("cam_qw", default_value="0.7071067811865476"),
     ]
 
     # Bridges the robot URDF TF tree (lio_gripper_interface_link) to the RealSense driver TF tree (camera_link).
@@ -148,12 +152,11 @@ def generate_launch_description() -> LaunchDescription:
             "probe_health_on_startup": LaunchConfiguration("probe_health_on_startup"),
             "gripper_frame_id": LaunchConfiguration("gripper_frame_id"),
             "robot_base_frame_id": LaunchConfiguration("robot_base_frame_id"),
-            # Systematic extrinsic-bias correction added to the base-frame grasp.
-            # Observed bias: gripper landed ~5cm right, ~3cm up, ~3cm back of target.
-            # Base axes: +y = back (toward robot), -y = forward, +z = up, right = -x.
-            # Correction = -bias  →  x:+0.05 (push left), y:-0.03 (push forward), z:-0.03 (push down).
-            # If the x error grows instead of shrinking, flip the sign of the first value.
-            "grasp_offset_base_xyz": [0.05, -0.03, -0.03],
+            # Systematic extrinsic-bias correction (meters) added to the grasp position
+            # AFTER transformation into robot_base_frame_id (= LIO_base_link).
+            # Axes follow LIO_base_link: +x = arm-forward, +y = left, +z = up.
+            # Set to [0,0,0] until re-calibrated in LIO_base_link axes.
+            "grasp_offset_base_xyz": [0.0, 0.0, 0.0],
             "ik_urdf_path": LaunchConfiguration("ik_urdf_path"),
             "joint_states_topic": LaunchConfiguration("joint_states_topic"),
         }],

@@ -73,6 +73,7 @@ int main(int argc, char **argv) {
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr command_sub;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr direction_sub;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr traj_sub;
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr commanded_pose_sub;
 
     // Assign the subscriptions and store them
     twist_sub = node->create_subscription<geometry_msgs::msg::TwistStamped>(
@@ -109,6 +110,32 @@ int main(int argc, char **argv) {
             RCLCPP_INFO(node->get_logger(), "Received pose update");
             commandedPose.pose = msg->pose;
             frame_id = msg->header.frame_id;
+            start = true;
+        });
+
+    commanded_pose_sub = node->create_subscription<geometry_msgs::msg::PoseStamped>(
+        "/commanded_pose", 1,
+        [&](geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+            RCLCPP_INFO(node->get_logger(), "Received commanded_pose for grasp execution");
+            // Transform from LIO_robot_base_link to LIO_base_link (the IK URDF root frame).
+            // The two frames differ by z=+0.266m and Rz(+90°).
+            try {
+                geometry_msgs::msg::PoseStamped transformed =
+                    tfBuffer.transform(*msg, "LIO_base_link",
+                                       tf2::durationFromSec(0.2));
+                commandedPose.pose = transformed.pose;
+                RCLCPP_INFO(node->get_logger(),
+                    "IK target in LIO_base_link: x=%.3f y=%.3f z=%.3f",
+                    transformed.pose.position.x,
+                    transformed.pose.position.y,
+                    transformed.pose.position.z);
+            } catch (tf2::TransformException &ex) {
+                RCLCPP_WARN(node->get_logger(),
+                    "TF transform to LIO_base_link failed: %s — using pose as-is", ex.what());
+                commandedPose.pose = msg->pose;
+            }
+            commandedVel = geometry_msgs::msg::Twist();  // zero velocity
+            frame_id = "lio_tcp_joint";
             start = true;
         });
 

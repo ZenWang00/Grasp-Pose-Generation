@@ -65,12 +65,12 @@ class GraspPoseClientNode(Node):
         self.declare_parameter("max_snapshot_age_s", 2.0)
         self.declare_parameter("probe_health_on_startup", True)
         self.declare_parameter("gripper_frame_id", "camera_color_optical_frame")
-        self.declare_parameter("robot_base_frame_id", "LIO_robot_base_link")
+        self.declare_parameter("robot_base_frame_id", "LIO_base_link")
         self.declare_parameter("tf_timeout_s", 0.2)
         # Constant correction (meters) added to every grasp position AFTER it has been
         # transformed into the robot base frame. Use this to absorb a systematic
-        # hand-eye / extrinsic bias. Axes follow LIO_robot_base_link:
-        #   +x / -x , +y = toward robot (back) / -y = forward , +z = up.
+        # hand-eye / extrinsic bias. Axes follow LIO_base_link (the IK URDF root):
+        #   +x = forward (arm extend direction), +y = left, +z = up.
         self.declare_parameter("grasp_offset_base_xyz", [0.0, 0.0, 0.0])
         self.declare_parameter("ik_urdf_path", "")
         self.declare_parameter("ik_base_link", "LIO_base_link")
@@ -79,6 +79,7 @@ class GraspPoseClientNode(Node):
         self.declare_parameter("ik_eps", 1e-4)
         self.declare_parameter("ik_dt", 0.1)
         self.declare_parameter("ik_damp", 1e-6)
+        self.declare_parameter("ik_bypass", True)
         self.declare_parameter("joint_states_topic", "/joint_states")
 
         self._server_url: str = self.get_parameter("server_url").value
@@ -279,7 +280,9 @@ class GraspPoseClientNode(Node):
         except Exception as exc:
             self.get_logger().error(f"Pinocchio IK solver init failed: {exc}")
 
-    def _pin_solve_ik(self, target_SE3, q0: np.ndarray) -> Optional[np.ndarray]:
+    def _pin_solve_ik(
+        self, target_SE3, q0: np.ndarray
+    ) -> tuple[Optional[np.ndarray], str]:
         """Two-stage Gauss-Newton IK.
 
         Stage 1: position-only IK (LOCAL_WORLD_ALIGNED, 3-DOF error) to drive the
@@ -289,6 +292,10 @@ class GraspPoseClientNode(Node):
 
         Stage 2: full 6-DOF IK starting from the Stage-1 solution, which is now
         in a much smaller basin and converges reliably.
+
+        Returns:
+            (q_solution, diag) where diag is a short diagnostic string.
+            q_solution is None on failure.
         """
         import pinocchio as pin
         model, data = self._pin_model, self._pin_data
@@ -296,11 +303,13 @@ class GraspPoseClientNode(Node):
         # ── Stage 1: position only ────────────────────────────────────────────
         q = q0.copy()
         t_tgt = target_SE3.translation
+        pos_err = float("inf")
         for _ in range(self._ik_max_iter):
             pin.forwardKinematics(model, data, q)
             pin.updateFramePlacements(model, data)
             err3 = t_tgt - data.oMf[self._pin_ee_id].translation
-            if np.linalg.norm(err3) < 1e-3:
+            pos_err = float(np.linalg.norm(err3))
+            if pos_err < 1e-3:
                 break
             J3 = pin.computeFrameJacobian(
                 model, data, q, self._pin_ee_id, pin.LOCAL_WORLD_ALIGNED)[:3]
@@ -308,20 +317,41 @@ class GraspPoseClientNode(Node):
             q = pin.integrate(model, q, v * self._ik_dt)
             q = np.clip(q, model.lowerPositionLimit, model.upperPositionLimit)
 
+        if pos_err >= 1e-3:
+            return None, f"stage1_failed: pos_err={pos_err*1000:.2f}mm (position unreachable)"
+
         # ── Stage 2: full 6-DOF IK from the position-warm seed ───────────────
+        err6_norm = float("inf")
         for _ in range(self._ik_max_iter):
             pin.forwardKinematics(model, data, q)
             pin.updateFramePlacements(model, data)
             err = pin.log6(data.oMf[self._pin_ee_id].inverse() * target_SE3).vector
-            if np.linalg.norm(err) < self._ik_eps:
-                return q
+            err6_norm = float(np.linalg.norm(err))
+            if err6_norm < self._ik_eps:
+                return q, "ok"
             J = pin.computeFrameJacobian(model, data, q, self._pin_ee_id, pin.LOCAL)
             v = J.T @ np.linalg.solve(J @ J.T + self._ik_damp * np.eye(6), err)
             q = pin.integrate(model, q, v * self._ik_dt)
             q = np.clip(q, model.lowerPositionLimit, model.upperPositionLimit)
-        return None
+
+        # Report final residuals broken into position and rotation components
+        pin.forwardKinematics(model, data, q)
+        pin.updateFramePlacements(model, data)
+        final_pos_err = float(np.linalg.norm(
+            target_SE3.translation - data.oMf[self._pin_ee_id].translation))
+        return None, (
+            f"stage2_failed: log6_err={err6_norm:.4f} "
+            f"pos_err={final_pos_err*1000:.2f}mm "
+            f"(orientation unsolvable after position converged)"
+        )
 
     def _check_ik_feasibility(self, grasps: list[dict]) -> list[dict]:
+        if bool(self.get_parameter("ik_bypass").value):
+            self.get_logger().warn(
+                f"ik_bypass=True — skipping IK check, passing all {len(grasps)} candidate(s) through"
+            )
+            return grasps
+
         if self._pin_model is None:
             self.get_logger().warn(
                 "IK solver not ready — passing all candidates through",
@@ -380,14 +410,27 @@ class GraspPoseClientNode(Node):
                 pin.Quaternion(q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]).toRotationMatrix(),
                 pos,
             )
-            ok = any(self._pin_solve_ik(target_SE3, s) is not None for s in seeds)
-            self.get_logger().info(
-                f"IK candidate {i}: pos=[{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}] "
-                f"quat(xyzw)=[{q_xyzw[0]:.3f},{q_xyzw[1]:.3f},{q_xyzw[2]:.3f},{q_xyzw[3]:.3f}] "
-                f"→ {'PASS' if ok else 'FAIL'}"
+            pose_str = (
+                f"pos=[{pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f}] "
+                f"quat(xyzw)=[{q_xyzw[0]:.3f},{q_xyzw[1]:.3f},{q_xyzw[2]:.3f},{q_xyzw[3]:.3f}]"
             )
+            q_sol = None
+            seed_diags: list[str] = []
+            for j, s in enumerate(seeds):
+                sol, diag = self._pin_solve_ik(target_SE3, s)
+                seed_diags.append(f"seed{j}:{diag}")
+                if sol is not None:
+                    q_sol = sol
+                    break
+            ok = q_sol is not None
             if ok:
+                self.get_logger().info(f"IK candidate {i}: {pose_str} → PASS [{seed_diags[0]}]")
                 passed.append(grasp)
+            else:
+                self.get_logger().warn(
+                    f"IK candidate {i}: {pose_str} → FAIL "
+                    f"[{'; '.join(seed_diags)}]"
+                )
 
         self.get_logger().info(
             f"IK feasibility: {len(passed)}/{len(grasps)} candidates passed"
