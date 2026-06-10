@@ -317,7 +317,7 @@ fn optimize_robot(robot_start: *mut [f64;6], position: &Vector3<f64>, orientatio
     let mut cur_cost: f64 = 0.0;
     cost(&robot_state, &mut cur_cost).unwrap();
     let problem = Problem::new(&bounds, dcost, cost);
-    let mut opt = PANOCOptimizer::new(problem, panoc_cache).with_max_iter(50).with_max_duration(std::time::Duration::from_millis(7));
+    let mut opt = PANOCOptimizer::new(problem, panoc_cache).with_max_iter(300).with_max_duration(std::time::Duration::from_millis(7));
 
     bounds.project(&mut robot_state);
     let _status = opt.solve(&mut robot_state);

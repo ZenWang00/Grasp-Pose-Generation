@@ -17,6 +17,7 @@ find_package(std_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 
 find_package(geosacs_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
@@ -73,6 +74,7 @@ ament_target_dependencies(${PROJECT_NAME}
   tf2_geometry_msgs
   std_msgs
   nav_msgs
+  sensor_msgs
   geosacs_msgs
 )
 

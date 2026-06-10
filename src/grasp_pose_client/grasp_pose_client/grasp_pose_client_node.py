@@ -22,7 +22,7 @@ from rclpy.time import Time
 import tf2_ros
 from sensor_msgs.msg import CameraInfo, Image, JointState
 from geometry_msgs.msg import Pose, PoseArray, PoseStamped, TransformStamped
-from std_msgs.msg import Header
+from std_msgs.msg import Float64MultiArray, Header
 from std_srvs.srv import Trigger
 
 import message_filters
@@ -30,6 +30,7 @@ from cv_bridge import CvBridge
 
 from grasp_pose_client_msgs.srv import RequestGrasp
 
+from .grasp_logger import GraspLogger
 from .http_client import GraspServerError, get_health, poll_capture_request, poll_publish, post_grasp, submit_ik_result, upload_capture
 from .image_conversion import (
     ImageConversionError,
@@ -79,8 +80,18 @@ class GraspPoseClientNode(Node):
         self.declare_parameter("ik_eps", 1e-4)
         self.declare_parameter("ik_dt", 0.1)
         self.declare_parameter("ik_damp", 1e-6)
-        self.declare_parameter("ik_bypass", True)
+        self.declare_parameter("ik_bypass", False)
         self.declare_parameter("joint_states_topic", "/joint_states")
+        self.declare_parameter("log_dir", "~/grasp_logs")
+        self.declare_parameter("grasp_target_topic", "/grasp_target_pose")
+        # myP executor output: flat [x_mm, y_mm, z_mm, roll_deg, pitch_deg, yaw_deg]
+        # already in myp_base_frame, so the myP-side script needs no TF/numpy/scipy.
+        self.declare_parameter("myp_target_topic", "/grasp_target_myp")
+        self.declare_parameter("myp_base_frame", "LIO_robot_base_link")
+        self.declare_parameter("arm_start_position_threshold", 0.005)  # metres: min move to enter MOVING
+        self.declare_parameter("arm_stop_position_threshold", 0.001)   # metres: max delta to be "stopped"
+        self.declare_parameter("arm_stop_debounce_count", 5)
+        self.declare_parameter("arm_stop_timeout_s", 15.0)             # give up if arm never starts
 
         self._server_url: str = self.get_parameter("server_url").value
         self._seen_phases: set[str] = set()  # f"{trace_id}:{mode}" already processed
@@ -123,6 +134,29 @@ class GraspPoseClientNode(Node):
         # TF2 buffer for gripper→base lookup ------------------------------------------
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+
+        # Per-run JSONL logger ---------------------------------------------------------
+        _log_dir = str(self.get_parameter("log_dir").value)
+        self._grasp_log = GraspLogger(_log_dir)
+        self._grasp_log.write("session_start", node="grasp_pose_client",
+                               server_url=self._server_url)
+        self.get_logger().info(f"Grasp logger active: {self._grasp_log.path}")
+
+        # Arm-stop detection state machine (TF position-delta based) -----------------
+        self._arm_start_position_threshold: float = float(
+            self.get_parameter("arm_start_position_threshold").value)
+        self._arm_stop_position_threshold: float = float(
+            self.get_parameter("arm_stop_position_threshold").value)
+        self._arm_stop_debounce_count: int = int(
+            self.get_parameter("arm_stop_debounce_count").value)
+        self._arm_stop_timeout_s: float = float(
+            self.get_parameter("arm_stop_timeout_s").value)
+        self._motion_state: str = "IDLE"   # IDLE | COMMANDED | MOVING
+        self._position_stable_count: int = 0
+        self._commanded_tcp_pos: Optional[np.ndarray] = None  # pos when command issued
+        self._prev_tcp_pos: Optional[np.ndarray] = None       # pos at last MOVING tick
+        self._motion_commanded_time: float = 0.0
+        self._arm_stop_run_id: str = ""
 
         # JointState subscription for IK seed + Pinocchio IK solver init --------------
         _joint_states_topic = str(self.get_parameter("joint_states_topic").value)
@@ -173,8 +207,14 @@ class GraspPoseClientNode(Node):
         self._best_pose_pub = self.create_publisher(
             PoseStamped, "~/best_grasp", latched_qos
         )
+        _grasp_target_topic = str(self.get_parameter("grasp_target_topic").value)
         self._commanded_pose_pub = self.create_publisher(
-            PoseStamped, "/commanded_pose", 10
+            PoseStamped, _grasp_target_topic, 10
+        )
+        self._myp_base_frame: str = str(self.get_parameter("myp_base_frame").value)
+        _myp_target_topic = str(self.get_parameter("myp_target_topic").value)
+        self._myp_target_pub = self.create_publisher(
+            Float64MultiArray, _myp_target_topic, 10
         )
         self._pose_array_pub = self.create_publisher(
             PoseArray, "~/grasps", latched_qos
@@ -199,6 +239,13 @@ class GraspPoseClientNode(Node):
         self.create_timer(
             0.1,
             self._broadcast_grasp_tfs,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+
+        # Arm-stop poll: 5 Hz TF position-delta check (runs only when COMMANDED/MOVING)
+        self.create_timer(
+            0.2,
+            self._arm_stop_poll,
             callback_group=MutuallyExclusiveCallbackGroup(),
         )
 
@@ -256,6 +303,104 @@ class GraspPoseClientNode(Node):
     def _joint_state_cb(self, msg: JointState) -> None:
         for name, pos in zip(msg.name, msg.position):
             self._joint_positions[name] = float(pos)
+
+    def _arm_stop_poll(self) -> None:
+        """5 Hz timer: two-phase arm-stop detection via TCP TF position delta.
+
+        Phase 1 (COMMANDED): wait until TCP has moved > arm_start_position_threshold
+                             away from its position at command time, confirming motion started.
+        Phase 2 (MOVING):    once moving, wait until consecutive delta < arm_stop_position_threshold
+                             for arm_stop_debounce_count ticks, then log arm_stopped.
+        """
+        if self._motion_state == "IDLE":
+            return
+        T = self._lookup_tf_matrix(self._robot_base_frame_id, self._ik_tip_link)
+        if T is None:
+            return
+        pos = T[:3, 3].copy()
+        now = self.get_clock().now().nanoseconds * 1e-9
+
+        if self._motion_state == "COMMANDED":
+            if self._commanded_tcp_pos is None:
+                # First sample: record reference position and timestamp
+                self._commanded_tcp_pos = pos
+                self._motion_commanded_time = now
+                return
+            # Check if arm has moved enough to be considered "started"
+            moved = float(np.linalg.norm(pos - self._commanded_tcp_pos))
+            if moved > self._arm_start_position_threshold:
+                self._motion_state = "MOVING"
+                self._prev_tcp_pos = pos
+                self._position_stable_count = 0
+            elif now - self._motion_commanded_time > self._arm_stop_timeout_s:
+                self.get_logger().warn(
+                    f"arm_stop: arm did not start moving within {self._arm_stop_timeout_s:.0f}s "
+                    "after commanded_pose — giving up"
+                )
+                self._motion_state = "IDLE"
+                self._commanded_tcp_pos = None
+            return
+
+        # MOVING: check whether TCP has stopped moving
+        if self._prev_tcp_pos is not None:
+            delta = float(np.linalg.norm(pos - self._prev_tcp_pos))
+            if delta < self._arm_stop_position_threshold:
+                self._position_stable_count += 1
+                if self._position_stable_count >= self._arm_stop_debounce_count:
+                    self._motion_state = "IDLE"
+                    self._commanded_tcp_pos = None
+                    self._log_arm_stop(T)
+            else:
+                self._position_stable_count = 0
+        self._prev_tcp_pos = pos
+
+    def _log_arm_stop(self, T: np.ndarray) -> None:
+        """Write an arm_stopped log entry from the given TCP TF matrix."""
+        t = T[:3, 3]
+        q = self._rot_to_quat_xyzw(T[:3, :3])
+        self._grasp_log.write(
+            "arm_stopped",
+            run_id=self._arm_stop_run_id,
+            frame=self._robot_base_frame_id,
+            position={"x": float(t[0]), "y": float(t[1]), "z": float(t[2])},
+            orientation={"x": q[0], "y": q[1], "z": q[2], "w": q[3]},
+        )
+
+    @staticmethod
+    def _rot_to_quat_xyzw(R: np.ndarray) -> list:
+        """Rotation matrix → [qx, qy, qz, qw] via Shepperd's method, w ≥ 0."""
+        trace = R[0, 0] + R[1, 1] + R[2, 2]
+        if trace > 0.0:
+            s = np.sqrt(trace + 1.0) * 2.0
+            qw = 0.25 * s
+            qx = (R[2, 1] - R[1, 2]) / s
+            qy = (R[0, 2] - R[2, 0]) / s
+            qz = (R[1, 0] - R[0, 1]) / s
+        elif (R[0, 0] > R[1, 1]) and (R[0, 0] > R[2, 2]):
+            s = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
+            qw = (R[2, 1] - R[1, 2]) / s
+            qx = 0.25 * s
+            qy = (R[0, 1] + R[1, 0]) / s
+            qz = (R[0, 2] + R[2, 0]) / s
+        elif R[1, 1] > R[2, 2]:
+            s = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
+            qw = (R[0, 2] - R[2, 0]) / s
+            qx = (R[0, 1] + R[1, 0]) / s
+            qy = 0.25 * s
+            qz = (R[1, 2] + R[2, 1]) / s
+        else:
+            s = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
+            qw = (R[1, 0] - R[0, 1]) / s
+            qx = (R[0, 2] + R[2, 0]) / s
+            qy = (R[1, 2] + R[2, 1]) / s
+            qz = 0.25 * s
+        q = np.array([qx, qy, qz, qw])
+        norm = float(np.linalg.norm(q))
+        if norm > 0.0:
+            q = q / norm
+        if q[3] < 0.0:
+            q = -q
+        return [float(q[0]), float(q[1]), float(q[2]), float(q[3])]
 
     def _init_ik_solver(self) -> None:
         urdf_path = str(self.get_parameter("ik_urdf_path").value)
@@ -473,6 +618,19 @@ class GraspPoseClientNode(Node):
             f"{len(result.grasps)} grasp(s) for execution"
         )
 
+        # Log best grasp as received from server (camera frame, before any TF)
+        if result.grasps:
+            g0 = result.grasps[0]
+            self._grasp_log.write(
+                "server_best_grasp6d",
+                run_id=result.run_id,
+                score=g0.get("score"),
+                frame=result.frame_id,
+                position_xyz=g0.get("position_xyz"),
+                quaternion_xyzw=g0.get("quaternion_xyzw"),
+                pose_4x4=g0.get("pose_4x4"),
+            )
+
         T_base_camera = self._lookup_T_base_camera()
         publish_frame_id = self._robot_base_frame_id if T_base_camera is not None else result.frame_id
         stamp = self.get_clock().now().to_msg()
@@ -504,6 +662,21 @@ class GraspPoseClientNode(Node):
             "frame_id": publish_frame_id,
         })()
         self._publish_visualisation(fake_response)
+
+        # Log commanded_pose and arm to start monitoring for stop
+        _p = grasps_msgs[0].pose.position
+        _o = grasps_msgs[0].pose.orientation
+        self._grasp_log.write(
+            "commanded_pose",
+            run_id=result.run_id,
+            frame=publish_frame_id,
+            position={"x": _p.x, "y": _p.y, "z": _p.z},
+            orientation={"x": _o.x, "y": _o.y, "z": _o.z, "w": _o.w},
+        )
+        self._motion_state = "COMMANDED"
+        self._commanded_tcp_pos = None  # reset so poll timer records fresh reference
+        self._position_stable_count = 0
+        self._arm_stop_run_id = result.run_id
 
         # Debug: raw camera-frame overlay + grasp TF frames for RViz verification.
         cam_best = self._publish_debug_camera(result.grasps, result.frame_id, stamp)
@@ -691,6 +864,7 @@ class GraspPoseClientNode(Node):
         best = response.grasps[0]
         self._best_pose_pub.publish(best)
         self._commanded_pose_pub.publish(best)
+        self._publish_myp_target(best)
 
         pose_array = PoseArray()
         # All grasps share the same frame_id (server already ensures that).
@@ -700,6 +874,64 @@ class GraspPoseClientNode(Node):
         )
         pose_array.poses = [item.pose for item in response.grasps]
         self._pose_array_pub.publish(pose_array)
+
+    def _publish_myp_target(self, best: PoseStamped) -> None:
+        """Publish the best grasp as a myP-ready flat array.
+
+        Output: Float64MultiArray [x_mm, y_mm, z_mm, roll_deg, pitch_deg, yaw_deg]
+        in ``myp_base_frame`` (extrinsic-XYZ RPY, the myP SDK convention).
+        All TF and unit conversion happens here so the myP-side script only
+        forwards six floats to ``move_pose()``.
+        """
+        T_myp_src = self._lookup_tf_matrix(self._myp_base_frame, best.header.frame_id)
+        if T_myp_src is None:
+            self.get_logger().warn(
+                f"myP target NOT published: TF {best.header.frame_id}→{self._myp_base_frame} unavailable."
+            )
+            return
+
+        p = best.pose.position
+        q = best.pose.orientation
+        x, y, z, w = q.x, q.y, q.z, q.w
+        R = np.array([
+            [1 - 2*(y*y + z*z),   2*(x*y - w*z),   2*(x*z + w*y)],
+            [  2*(x*y + w*z), 1 - 2*(x*x + z*z),   2*(y*z - w*x)],
+            [  2*(x*z - w*y),   2*(y*z + w*x), 1 - 2*(x*x + y*y)],
+        ], dtype=float)
+        T_pose = np.eye(4)
+        T_pose[:3, :3] = R
+        T_pose[:3, 3] = [p.x, p.y, p.z]
+
+        T_g = T_myp_src @ T_pose
+        Rg = T_g[:3, :3]
+
+        # Extrinsic-XYZ RPY from R = Rz(yaw) @ Ry(pitch) @ Rx(roll)
+        pitch = float(np.arcsin(np.clip(-Rg[2, 0], -1.0, 1.0)))
+        roll = float(np.arctan2(Rg[2, 1], Rg[2, 2]))
+        yaw = float(np.arctan2(Rg[1, 0], Rg[0, 0]))
+
+        vals = [
+            float(T_g[0, 3]) * 1000.0,
+            float(T_g[1, 3]) * 1000.0,
+            float(T_g[2, 3]) * 1000.0,
+            float(np.degrees(roll)),
+            float(np.degrees(pitch)),
+            float(np.degrees(yaw)),
+        ]
+        msg = Float64MultiArray()
+        msg.data = vals
+        self._myp_target_pub.publish(msg)
+        self.get_logger().info(
+            f"myP target published in {self._myp_base_frame}: "
+            f"xyz_mm=({vals[0]:.1f}, {vals[1]:.1f}, {vals[2]:.1f}) "
+            f"rpy_deg=({vals[3]:.1f}, {vals[4]:.1f}, {vals[5]:.1f})"
+        )
+        self._grasp_log.write(
+            "myp_target",
+            frame=self._myp_base_frame,
+            xyz_mm=vals[:3],
+            rpy_deg=vals[3:],
+        )
 
     def _publish_debug_camera(
         self,
@@ -868,6 +1100,19 @@ class GraspPoseClientNode(Node):
             self.get_logger().error(response.message)
             return response
 
+        # Log best grasp as received from server (camera frame, before any TF)
+        if result.grasps:
+            g0 = result.grasps[0]
+            self._grasp_log.write(
+                "server_best_grasp6d",
+                run_id=result.run_id,
+                score=g0.get("score"),
+                frame=result.frame_id,
+                position_xyz=g0.get("position_xyz"),
+                quaternion_xyzw=g0.get("quaternion_xyzw"),
+                pose_4x4=g0.get("pose_4x4"),
+            )
+
         stamp = color_msg.header.stamp  # echo the source frame timestamp
         # Transform camera-frame poses to robot base frame when TF is available.
         if T_base_camera is not None:
@@ -904,6 +1149,21 @@ class GraspPoseClientNode(Node):
         response.widths = widths
 
         self._publish_visualisation(response)
+
+        # Log commanded_pose and arm to start monitoring for stop
+        _p = response.grasps[0].pose.position
+        _o = response.grasps[0].pose.orientation
+        self._grasp_log.write(
+            "commanded_pose",
+            run_id=result.run_id,
+            frame=publish_frame_id,
+            position={"x": _p.x, "y": _p.y, "z": _p.z},
+            orientation={"x": _o.x, "y": _o.y, "z": _o.z, "w": _o.w},
+        )
+        self._motion_state = "COMMANDED"
+        self._commanded_tcp_pos = None  # reset so poll timer records fresh reference
+        self._position_stable_count = 0
+        self._arm_stop_run_id = result.run_id
 
         # Debug: raw camera-frame overlay + grasp TF frames for RViz verification.
         cam_best = self._publish_debug_camera(result.grasps, result.frame_id, stamp)

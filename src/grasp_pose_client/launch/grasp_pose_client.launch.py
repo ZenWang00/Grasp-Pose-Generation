@@ -13,9 +13,8 @@ Then:
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -98,15 +97,33 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("cam_z",  default_value="0.052"),
         DeclareLaunchArgument(
             "ik_urdf_path",
-            default_value=PathJoinSubstitution([
-                FindPackageShare("panda_ik"), "urdfs", "lio_arm_reframed.urdf"
-            ]),
-            description="URDF for Pinocchio IK feasibility check. Set empty to disable.",
+            default_value="",
+            description="URDF for Pinocchio IK feasibility check. Empty = disabled (default when using myP move_pose).",
+        ),
+        DeclareLaunchArgument(
+            "grasp_target_topic",
+            default_value="/grasp_target_pose",
+            description="Topic on which the best grasp PoseStamped is published (RViz/debug).",
+        ),
+        DeclareLaunchArgument(
+            "myp_target_topic",
+            default_value="/grasp_target_myp",
+            description="Float64MultiArray [x_mm,y_mm,z_mm,roll_deg,pitch_deg,yaw_deg] for the myP executor script.",
+        ),
+        DeclareLaunchArgument(
+            "myp_base_frame",
+            default_value="LIO_robot_base_link",
+            description="ROS frame matching the myP SDK robot base; myP targets are expressed here.",
         ),
         DeclareLaunchArgument(
             "joint_states_topic",
             default_value="/ik_interface/joint_states_sim",
             description="JointState topic used to seed the Pinocchio IK solver.",
+        ),
+        DeclareLaunchArgument(
+            "log_dir",
+            default_value="~/grasp_logs",
+            description="Directory for per-run JSONL grasp session logs.",
         ),
         DeclareLaunchArgument("cam_qx", default_value="0.0"),
         DeclareLaunchArgument("cam_qy", default_value="-0.7071067811865476"),  # Ry(-90°)
@@ -159,6 +176,10 @@ def generate_launch_description() -> LaunchDescription:
             "grasp_offset_base_xyz": [0.0, 0.0, 0.0],
             "ik_urdf_path": LaunchConfiguration("ik_urdf_path"),
             "joint_states_topic": LaunchConfiguration("joint_states_topic"),
+            "log_dir": LaunchConfiguration("log_dir"),
+            "grasp_target_topic": LaunchConfiguration("grasp_target_topic"),
+            "myp_target_topic": LaunchConfiguration("myp_target_topic"),
+            "myp_base_frame": LaunchConfiguration("myp_base_frame"),
         }],
     )
 

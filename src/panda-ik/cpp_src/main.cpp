@@ -2,6 +2,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 #include "geosacs_msgs/msg/weighted_pose.hpp"
 
 #include <array>
@@ -49,6 +50,21 @@ int main(int argc, char **argv) {
   double q_weight = 1.5;
 
   bool have_command = false;
+  bool have_real_joints = false;
+
+  // /lio_joint_states: keep joint_angles in sync with the physical robot
+  auto sub_joints = node->create_subscription<sensor_msgs::msg::JointState>(
+      "/lio_joint_states", 10,
+      [&](const sensor_msgs::msg::JointState::SharedPtr msg) {
+        if (msg->position.size() >= 6) {
+          for (size_t i = 0; i < 6; ++i)
+            joint_angles[i] = msg->position[i];
+          if (!have_real_joints) {
+            RCLCPP_INFO(node->get_logger(), "IK seed initialised from /lio_joint_states");
+            have_real_joints = true;
+          }
+        }
+      });
 
   // /weighted_pose (used only if weighted_pose==true)
   auto sub_weighted = node->create_subscription<geosacs_msgs::msg::WeightedPose>(
