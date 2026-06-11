@@ -117,22 +117,31 @@ int main(int argc, char **argv) {
         "/commanded_pose", 1,
         [&](geometry_msgs::msg::PoseStamped::SharedPtr msg) {
             RCLCPP_INFO(node->get_logger(), "Received commanded_pose for grasp execution");
-            // Transform from LIO_robot_base_link to LIO_base_link (the IK URDF root frame).
-            // The two frames differ by z=+0.266m and Rz(+90°).
+            // The executor URDF (lio_arm.urdf) is rooted at base_footprint, which
+            // coincides with LIO_robot_base_link (lio_joint1 at z=0.212 in both).
+            // solve() therefore expects poses in LIO_robot_base_link, NOT
+            // LIO_base_link (they differ by z=+0.2655m and Rz(+90°)).
             try {
                 geometry_msgs::msg::PoseStamped transformed =
-                    tfBuffer.transform(*msg, "LIO_base_link",
+                    tfBuffer.transform(*msg, "LIO_robot_base_link",
                                        tf2::durationFromSec(0.2));
                 commandedPose.pose = transformed.pose;
                 RCLCPP_INFO(node->get_logger(),
-                    "IK target in LIO_base_link: x=%.3f y=%.3f z=%.3f",
+                    "IK target in LIO_robot_base_link: x=%.3f y=%.3f z=%.3f",
                     transformed.pose.position.x,
                     transformed.pose.position.y,
                     transformed.pose.position.z);
             } catch (tf2::TransformException &ex) {
-                RCLCPP_WARN(node->get_logger(),
-                    "TF transform to LIO_base_link failed: %s — using pose as-is", ex.what());
-                commandedPose.pose = msg->pose;
+                if (msg->header.frame_id == "LIO_robot_base_link") {
+                    commandedPose.pose = msg->pose;
+                } else {
+                    RCLCPP_ERROR(node->get_logger(),
+                        "TF transform %s->LIO_robot_base_link failed: %s — "
+                        "ignoring commanded_pose (executing it in the wrong frame "
+                        "would send the arm to a rotated/offset target)",
+                        msg->header.frame_id.c_str(), ex.what());
+                    return;
+                }
             }
             commandedVel = geometry_msgs::msg::Twist();  // zero velocity
             frame_id = "lio_tcp_joint";
