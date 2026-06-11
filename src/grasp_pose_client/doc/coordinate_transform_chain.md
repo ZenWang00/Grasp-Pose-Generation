@@ -1,56 +1,60 @@
-# 坐标变换链路：VLA Server → `/commanded_pose`
+# Coordinate Transform Chain: VLA Server → `/commanded_pose`
 
-本文聚焦描述：VLA 服务器返回最佳抓取姿态之后，`grasp_pose_client_node` 对坐标进行的全部变换步骤，直到把 `PoseStamped` 发布到 `/commanded_pose` topic。
+This document focuses on every coordinate transformation step that `grasp_pose_client_node` performs after the VLA server returns the best grasp pose, up to publishing a `PoseStamped` on the `/commanded_pose` topic.
 
 ---
 
-## 总体流程
+## Overall flow
 
 ```
 VLA Server (HTTP)
-  └─ 返回抓取姿态（相机光学坐标系）
+  └─ returns grasp pose (camera optical frame)
        │
        ▼
-Step 1  解析 JSON → 构造 T_grasp_cam（4×4，SE3）
+Step 1  Parse JSON → build T_grasp_cam (4×4, SE3)
        │
        ▼
-Step 2  TF2 查询：LIO_robot_base_link ← camera_color_optical_frame
-        → 得到 T_base_camera（4×4）
+Step 2  TF2 lookup: LIO_base_link ← camera_color_optical_frame
+        → yields T_base_camera (4×4)
        │
        ▼
-Step 3  矩阵乘法：T_grasp_base = T_base_camera × T_grasp_cam
+Step 3  Matrix multiplication: T_grasp_base = T_base_camera × T_grasp_cam
        │
        ▼
-Step 4  施加手眼标定残差修正：p_final = p_grasp_base + grasp_offset_base_xyz
+Step 4  Apply hand-eye calibration residual correction: p_final = p_grasp_base + grasp_offset_base_xyz
        │
        ▼
-Step 5  旋转矩阵 → 四元数（Shepperd 法）
+Step 5  Axis-convention remap: R_tcp = R_grasp_base @ GRASP_TO_TCP_AXES
+        grasp (X=closing, Y=lateral, Z=approach) → LIO TCP (X=approach, Y=closing, Z=lateral)
        │
        ▼
-Step 6  打包为 geometry_msgs/PoseStamped
-        frame_id = "LIO_robot_base_link"
+Step 6  Rotation matrix → quaternion (Shepperd's method)
        │
-       ├─ publish → ~/best_grasp      (latched，供 RViz)
-       ├─ publish → ~/grasps          (latched，所有 Top-K)
-       └─ publish → /commanded_pose   (下游执行消费)
+       ▼
+Step 7  Pack into geometry_msgs/PoseStamped
+        frame_id = "LIO_base_link"
+       │
+       ├─ publish → ~/best_grasp      (latched, for RViz)
+       ├─ publish → ~/grasps          (latched, all Top-K)
+       └─ publish → /commanded_pose   (consumed by downstream execution)
 ```
 
 ---
 
-## 详细步骤说明
+## Detailed steps
 
-### Step 1 — 解析服务器响应，构造 T_grasp_cam
+### Step 1 — Parse the server response and build T_grasp_cam
 
-代码位置：[`_transform_to_base()`](../grasp_pose_client/grasp_pose_client_node.py#L582)
+Code location: [`_transform_to_base()`](../grasp_pose_client/grasp_pose_client_node.py#L582)
 
-服务器每个 grasp entry（dict）有两种格式：
+Each grasp entry (dict) from the server comes in one of two formats:
 
-| 字段 | 含义 |
+| Field | Meaning |
 |------|------|
-| `pose_4x4` | 4×4 齐次变换矩阵，直接使用 |
-| `position_xyz` + `quaternion_xyzw` | 位置向量 + 四元数，客户端自行构造旋转矩阵再拼成 4×4 |
+| `pose_4x4` | 4×4 homogeneous transform matrix, used directly |
+| `position_xyz` + `quaternion_xyzw` | Position vector + quaternion; the client builds the rotation matrix itself and assembles the 4×4 |
 
-四元数 → 旋转矩阵（当 `pose_4x4` 不存在时）：
+Quaternion → rotation matrix (when `pose_4x4` is absent):
 
 ```python
 x, y, z, w = quat[0..3]
@@ -63,52 +67,54 @@ T_grasp_cam[:3,:3] = R
 T_grasp_cam[:3, 3] = position_xyz
 ```
 
-所有坐标系均为 **`camera_color_optical_frame`**（RealSense 彩色相机光学坐标系，Z 轴指向场景）。
+All coordinates are in **`camera_color_optical_frame`** (the RealSense color camera optical frame, Z axis pointing into the scene).
 
 ---
 
-### Step 2 — TF2 查询 T_base_camera
+### Step 2 — TF2 lookup of T_base_camera
 
-代码位置：[`_lookup_T_base_camera()`](../grasp_pose_client/grasp_pose_client_node.py#L549)
+Code location: [`_lookup_T_base_camera()`](../grasp_pose_client/grasp_pose_client_node.py#L549)
 
 ```
 lookup_transform(
-    target_frame = "LIO_base_link",              # robot_base_frame_id（IK URDF 根帧）
+    target_frame = "LIO_base_link",              # robot_base_frame_id (IK URDF root frame)
     source_frame = "camera_color_optical_frame", # gripper_frame_id
-    stamp = color_msg.header.stamp,              # 图像时间戳（服务调用路径）
-              或 Time()                          # 最新可用（轮询路径）
+    stamp = color_msg.header.stamp,              # image timestamp (service-call path)
+              or Time()                          # latest available (polling path)
 )
 ```
 
-TF 链路（运行时完整路径）：
+TF chain (full path at runtime):
 
 ```
 camera_color_optical_frame
-  ← camera_color_frame          (RealSense driver，静态)
-    ← camera_link               (RealSense driver，静态)
-      ← lio_gripper_interface_link  (手眼标定静态 TF，launch 文件发布)
+  ← camera_color_frame          (RealSense driver, static)
+    ← camera_link               (RealSense driver, static)
+      ← lio_gripper_interface_link  (hand-eye calibration static TF, published by the launch file)
         ← lio_link6G / lio_link56 / ... / lio_link12
           ← LIO_robot_base_link ← LIO_base_link ← ... ← map
 ```
 
-`lio_gripper_interface_link` → `camera_link` 这段静态 TF 由 launch 文件的
-`static_transform_publisher` 节点发布（[grasp_pose_client.launch.py](../launch/grasp_pose_client.launch.py#L115)）：
+The static TF segment `lio_gripper_interface_link` → `camera_link` is published by the
+`static_transform_publisher` node in the launch file
+([grasp_pose_client.launch.py](../launch/grasp_pose_client.launch.py#L115)):
 
 ```
-手眼标定结果：
-  平移：x=-0.10 m, y=0.0, z=+0.052 m
-  旋转：RPY(roll=0, pitch=-π/2, yaw=0)  →  Ry(-90°)
-  四元数：qx=0, qy=-0.7071, qz=0, qw=0.7071
+Hand-eye calibration result:
+  translation: x=-0.10 m, y=0.0, z=+0.052 m
+  rotation:    RPY(roll=0, pitch=-π/2, yaw=0)  →  Ry(-90°)
+  quaternion:  qx=0, qy=-0.7071, qz=0, qw=0.7071
 ```
 
-**查询失败时的降级处理**：如果 TF 超时（默认 0.2 s），`T_base_camera` 返回 `None`，
-姿态直接用相机坐标系发布（`frame_id = gripper_frame_id`），下游收到的是未变换坐标。
+**Fallback on lookup failure**: if TF times out (default 0.2 s), `T_base_camera` returns `None`
+and the pose is published directly in the camera frame (`frame_id = gripper_frame_id`), so
+downstream receives untransformed coordinates.
 
 ---
 
-### Step 3 — SE(3) 矩阵乘法
+### Step 3 — SE(3) matrix multiplication
 
-代码位置：[`_transform_to_base()` L611](../grasp_pose_client/grasp_pose_client_node.py#L611)
+Code location: [`_transform_to_base()` L611](../grasp_pose_client/grasp_pose_client_node.py#L611)
 
 ```python
 T_grasp_base = T_base_camera @ T_grasp_cam   # (4×4) @ (4×4)
@@ -116,102 +122,133 @@ R_base = T_grasp_base[:3, :3]
 t_base = T_grasp_base[:3, 3]
 ```
 
-这是标准刚体变换复合：把「抓取姿态相对于相机」直接变换到「抓取姿态相对于机器人底座」。
+This is a standard rigid-body transform composition: it maps "grasp pose relative to the camera" directly to "grasp pose relative to the robot base".
 
 ---
 
-### Step 4 — 手眼标定残差修正
+### Step 4 — Hand-eye calibration residual correction
 
-代码位置：[`_transform_to_base()` L614](../grasp_pose_client/grasp_pose_client_node.py#L614)
+Code location: [`_transform_to_base()` L614](../grasp_pose_client/grasp_pose_client_node.py#L614)
 
 ```python
 if offset_base is not None:
     t_base = t_base + offset_base   # offset_base = grasp_offset_base_xyz
 ```
 
-参数 `grasp_offset_base_xyz`（默认 `[0.0, 0.0, 0.0]`）用于吸收系统性外参偏差。
-坐标轴约定（`LIO_base_link` 坐标系，即 IK URDF 根帧）：
+The parameter `grasp_offset_base_xyz` (default `[0.0, 0.0, 0.0]`) absorbs systematic extrinsic-calibration bias.
+Axis convention (`LIO_base_link` frame, i.e. the IK URDF root frame):
 
-| 轴 | 方向 |
+| Axis | Direction |
 |----|------|
-| +x | 机械臂前伸方向 |
-| +y | 左 |
-| +z | 向上 |
+| +x | Forward reach direction of the arm |
+| +y | Left |
+| +z | Up |
 
-> **注意**：`robot_base_frame_id` 从旧的 `LIO_robot_base_link` 改为 `LIO_base_link` 后，
-> 轴定义随之变化（两帧差 Rz(90°)）。任何基于旧轴方向的历史 offset 标定值均需重新校准。
+> **Note**: after `robot_base_frame_id` changed from the old `LIO_robot_base_link` to `LIO_base_link`,
+> the axis definitions changed accordingly (the two frames differ by Rz(90°)). Any historical offset
+> calibration based on the old axis directions must be recalibrated.
 
 ---
 
-### Step 5 — 旋转矩阵 → 四元数
+### Step 5 — Axis-convention remap (grasp → LIO TCP)
 
-代码位置：[`_transform_to_base()` L617–L649](../grasp_pose_client/grasp_pose_client_node.py#L617)
+Code location: [`_transform_to_base()`](../grasp_pose_client/grasp_pose_client_node.py) (`GRASP_TO_TCP_AXES`)
 
-使用 **Shepperd 方法**（数值稳定的四分支算法，避免接近 0 的除法）：
-
-```
-trace > 0   → 标准公式
-R[0,0] 最大 → 以 qx 为主元
-R[1,1] 最大 → 以 qy 为主元
-R[2,2] 最大 → 以 qz 为主元
-```
-
-规范化与半球约束：
 ```python
-q = q / |q|          # L2 归一化
-if q[3] < 0: q = -q  # 强制 w ≥ 0（唯一表示）
+R_base = T_grasp_base[:3, :3] @ GRASP_TO_TCP_AXES
 ```
 
-输出格式：`[qx, qy, qz, qw]`（ROS 标准）
+The grasp pose and the LIO TCP frame (`lio_tcp_link`) use different axis semantics:
+
+| Physical meaning | Grasp convention | LIO TCP convention |
+|---|---|---|
+| approach | Z | X |
+| closing | X | Y |
+| lateral | Y | Z |
+
+`GRASP_TO_TCP_AXES = [[0,1,0],[0,0,1],[1,0,0]]` is the proper rotation (det = +1) that
+re-expresses the grasp axes in the TCP convention, so the published quaternion can be
+consumed directly as the `lio_tcp_link` target orientation by both the Pinocchio IK
+feasibility check and the PANOC IK in `panda_ik_teleop`. Once the arm reaches the
+target, the TF frame `lio_tcp_link` should coincide with `/commanded_pose` in RViz
+(position and all three axes).
 
 ---
 
-### Step 6 — 打包 PoseStamped 并发布
+### Step 6 — Rotation matrix → quaternion
 
-代码位置：[`_build_pose_stamped()`](../grasp_pose_client/grasp_pose_client_node.py#L923)，
+Code location: [`_transform_to_base()` L617–L649](../grasp_pose_client/grasp_pose_client_node.py#L617)
+
+Uses **Shepperd's method** (a numerically stable four-branch algorithm that avoids division by values close to 0):
+
+```
+trace > 0     → standard formula
+R[0,0] is max → pivot on qx
+R[1,1] is max → pivot on qy
+R[2,2] is max → pivot on qz
+```
+
+Normalization and hemisphere constraint:
+```python
+q = q / |q|          # L2 normalization
+if q[3] < 0: q = -q  # enforce w ≥ 0 (unique representation)
+```
+
+Output format: `[qx, qy, qz, qw]` (ROS standard)
+
+---
+
+### Step 7 — Pack into PoseStamped and publish
+
+Code locations: [`_build_pose_stamped()`](../grasp_pose_client/grasp_pose_client_node.py#L923),
 [`_publish_visualisation()`](../grasp_pose_client/grasp_pose_client_node.py#L688)
 
 ```python
 msg = PoseStamped()
-msg.header.stamp    = stamp        # 图像时间戳（保留时序）
-msg.header.frame_id = "LIO_base_link"   # robot_base_frame_id = IK URDF 根帧
+msg.header.stamp    = stamp        # image timestamp (preserves timing)
+msg.header.frame_id = "LIO_base_link"   # robot_base_frame_id = IK URDF root frame
 msg.pose.position.{x,y,z}         = t_base
 msg.pose.orientation.{x,y,z,w}    = q
 ```
 
-发布逻辑（`_publish_visualisation`）：
+Publishing logic (`_publish_visualisation`):
 
 ```python
-best = response.grasps[0]          # Top-1 最高分抓取
+best = response.grasps[0]          # Top-1 highest-scoring grasp
 self._best_pose_pub.publish(best)  # ~/best_grasp  (latched)
 self._commanded_pose_pub.publish(best)  # /commanded_pose
-# 全部 Top-K 也发布到 ~/grasps (PoseArray, latched)
+# All Top-K are also published to ~/grasps (PoseArray, latched)
 ```
 
-**只有 `grasps[0]`（最高分）被发到 `/commanded_pose`。**
+**Only `grasps[0]` (the highest-scoring grasp) is sent to `/commanded_pose`.**
 
 ---
 
-## 两条触发路径的差异
+## Differences between the two trigger paths
 
-| | 服务调用路径 | Web UI 轮询路径 |
+| | Service-call path | Web UI polling path |
 |---|---|---|
-| 触发方 | ROS2 服务调用 `~/request_grasp` | 0.5 Hz 定时器轮询 `/poll_publish` |
-| TF 时间戳 | `color_msg.header.stamp` | `Time()`（最新可用） |
-| IK 检查 | 可选（`ik_bypass=True` 默认跳过） | 同上 |
-| 发布路径 | 相同：`_transform_to_base` → `_publish_visualisation` | 相同 |
+| Triggered by | ROS2 service call `~/request_grasp` | 0.5 Hz timer polling `/poll_publish` |
+| TF timestamp | `color_msg.header.stamp` | `Time()` (latest available) |
+| IK check | Optional (`ik_bypass=True` skips by default) | Same |
+| Publish path | Identical: `_transform_to_base` → `_publish_visualisation` | Identical |
 
 ---
 
-## 调试辅助输出
+## Debug outputs
 
-除 `/commanded_pose` 外，节点还发布以下调试 topic，可在 RViz 中叠加对比：
+Besides `/commanded_pose`, the node publishes the following debug topics that can be overlaid in RViz for comparison:
 
-| Topic | 内容 |
+| Topic | Content |
 |-------|------|
-| `~/best_grasp_camera` | 服务器原始相机坐标系姿态（未变换） |
-| `~/grasps_camera` | 全部 Top-K 原始相机坐标系姿态 |
-| TF frame `grasp_best` | 以 `LIO_robot_base_link` 为父帧的 TF，10 Hz 刷新 |
-| TF frame `grasp_best_cam` | 以 `camera_color_optical_frame` 为父帧的 TF，10 Hz 刷新 |
+| `~/best_grasp_camera` | Raw server pose in the camera frame (untransformed) |
+| `~/grasps_camera` | All Top-K raw poses in the camera frame |
+| TF frame `grasp_best` | TF with `LIO_base_link` as parent, refreshed at 10 Hz |
+| TF frame `grasp_best_cam` | TF with `camera_color_optical_frame` as parent, refreshed at 10 Hz |
 
-若 RViz 中两套 TF 帧叠合，说明 TF 变换正确；若有位移，说明外参标定有残差，可调 `grasp_offset_base_xyz`。
+`grasp_best` uses the LIO TCP axis convention (X=approach, Y=closing, Z=lateral) while
+`grasp_best_cam` keeps the raw grasp convention (X=closing, Z=approach), so their axes
+are expected to differ by the fixed `GRASP_TO_TCP_AXES` permutation. The **positions**
+of the two frames must still coincide in RViz; a position offset means the extrinsic
+calibration has a residual, which can be tuned via `grasp_offset_base_xyz`. After
+execution, `lio_tcp_link` should coincide with `grasp_best` in both position and axes.

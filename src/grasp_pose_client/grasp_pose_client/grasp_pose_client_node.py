@@ -45,6 +45,16 @@ DEFAULT_DEPTH_TOPIC = "/camera/camera/aligned_depth_to_color/image_raw"
 DEFAULT_CAMERA_INFO_TOPIC = "/camera/camera/color/camera_info"
 DEFAULT_SERVER_URL = "http://localhost:8765"
 
+# Maps the grasp axis convention (X=closing, Y=lateral, Z=approach) onto the LIO
+# TCP convention of lio_tcp_link (X=approach, Y=closing, Z=lateral), so published
+# quaternions can be consumed directly as the lio_tcp_link target orientation:
+# R_tcp = R_grasp @ GRASP_TO_TCP_AXES  (columns: TCP X←grasp Z, Y←X, Z←Y).
+GRASP_TO_TCP_AXES = np.array([
+    [0.0, 1.0, 0.0],
+    [0.0, 0.0, 1.0],
+    [1.0, 0.0, 0.0],
+])
+
 
 class GraspPoseClientNode(Node):
     def __init__(self) -> None:
@@ -181,9 +191,11 @@ class GraspPoseClientNode(Node):
         )
 
         # Debug verification: republish the server's RAW camera-frame poses
-        # (no TF applied) alongside the base-frame poses above. With TF active
-        # these must overlap exactly in RViz; a mismatch isolates the bug to the
-        # client transform rather than the camera mount calibration.
+        # (no TF applied, grasp axis convention) alongside the base-frame poses
+        # above (TCP axis convention). With TF active their positions must
+        # overlap exactly in RViz, while orientations differ by the fixed
+        # grasp→TCP axis permutation. A position mismatch isolates the bug to
+        # the client transform rather than the camera mount calibration.
         self._best_pose_cam_pub = self.create_publisher(
             PoseStamped, "~/best_grasp_camera", latched_qos
         )
@@ -192,7 +204,10 @@ class GraspPoseClientNode(Node):
         )
 
         # Broadcast the best grasp as TF frames so RViz's TF display shows the
-        # full X/Y/Z axis triad (X=closing, Z=approach), not just a Pose arrow.
+        # full X/Y/Z axis triad, not just a Pose arrow. grasp_best uses the TCP
+        # convention (X=approach, Y=closing, Z=lateral) and should coincide with
+        # lio_tcp_link once the arm reaches the target; grasp_best_cam keeps the
+        # raw grasp convention (X=closing, Z=approach).
         self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
         self._grasp_tf_lock = threading.Lock()
         self._grasp_tfs: list[tuple[str, str, Pose]] = []
@@ -474,18 +489,23 @@ class GraspPoseClientNode(Node):
         )
 
         T_base_camera = self._lookup_T_base_camera()
-        publish_frame_id = self._robot_base_frame_id if T_base_camera is not None else result.frame_id
+        if T_base_camera is None:
+            # Never command a camera-frame pose; drop the seen-marker so the
+            # payload is retried on the next poll once TF recovers.
+            self._seen_phases.discard(phase_key)
+            self.get_logger().error(
+                f"[trace={result.trace_id}] TF {self._gripper_frame_id}→"
+                f"{self._robot_base_frame_id} unavailable — skipping publish, will retry"
+            )
+            return
+        publish_frame_id = self._robot_base_frame_id
         stamp = self.get_clock().now().to_msg()
 
         grasps_msgs: list[PoseStamped] = []
         scores: list[float] = []
         widths: list[float] = []
         for entry in result.grasps:
-            pose_data = (
-                self._transform_to_base(entry, T_base_camera, self._grasp_offset_base)
-                if T_base_camera is not None
-                else entry
-            )
+            pose_data = self._transform_to_base(entry, T_base_camera, self._grasp_offset_base)
             pose_stamped = self._build_pose_stamped(pose_data, stamp=stamp, frame_id=publish_frame_id)
             if pose_stamped is None:
                 continue
@@ -609,7 +629,7 @@ class GraspPoseClientNode(Node):
             T_grasp_cam[2, 3] = float(position[2])
 
         T_grasp_base = T_base_camera @ T_grasp_cam
-        R_base = T_grasp_base[:3, :3]
+        R_base = T_grasp_base[:3, :3] @ GRASP_TO_TCP_AXES
         t_base = T_grasp_base[:3, 3]
         if offset_base is not None:
             t_base = t_base + offset_base
@@ -690,7 +710,13 @@ class GraspPoseClientNode(Node):
             return
         best = response.grasps[0]
         self._best_pose_pub.publish(best)
-        self._commanded_pose_pub.publish(best)
+        if best.header.frame_id == self._robot_base_frame_id:
+            self._commanded_pose_pub.publish(best)
+        else:
+            self.get_logger().warn(
+                f"best grasp is in frame '{best.header.frame_id}', not base frame "
+                f"'{self._robot_base_frame_id}' — not publishing to /commanded_pose"
+            )
 
         pose_array = PoseArray()
         # All grasps share the same frame_id (server already ensures that).
