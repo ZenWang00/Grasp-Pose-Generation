@@ -141,7 +141,8 @@ class GraspPoseClientNode(Node):
         _log_dir = str(self.get_parameter("log_dir").value)
         self._grasp_log = GraspLogger(_log_dir)
         self._grasp_log.write("session_start", node="grasp_pose_client",
-                               server_url=self._server_url)
+                               server_url=self._server_url,
+                               grasp_offset_base_xyz=list(self._grasp_offset_base))
         self.get_logger().info(f"Grasp logger active: {self._grasp_log.path}")
 
         # Delayed arm-stop snapshot: record the TCP pose a fixed time after each

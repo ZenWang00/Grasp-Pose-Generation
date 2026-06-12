@@ -160,10 +160,11 @@ def generate_launch_description() -> LaunchDescription:
             # Systematic extrinsic-bias correction (meters) added to the grasp position
             # AFTER transformation into robot_base_frame_id (= LIO_base_link).
             # Axes follow LIO_base_link: +x = arm-forward, +y = left, +z = up.
-            # Calibrated 2026-06-11 from two logged runs (grasp_20260611_174804 /
-            # grasp_20260611_175442): arm_stopped − commanded averaged
-            # (+0.124, ~0, −0.222), so we pre-subtract it here.
-            "grasp_offset_base_xyz": [-0.05, 0.0, 0.25],
+            # Calibrated 2026-06-12 from 8 converged logged runs (orientation error
+            # <1°, two days of sessions): arm_stopped − commanded averaged
+            # (+0.122, +0.005, −0.223) with std (0.005, 0.021, 0.013), so we
+            # pre-subtract it here.
+            "grasp_offset_base_xyz": [-0.15, 0.0, 0.3],
             "ik_urdf_path": LaunchConfiguration("ik_urdf_path"),
             "joint_states_topic": LaunchConfiguration("joint_states_topic"),
             "log_dir": LaunchConfiguration("log_dir"),
