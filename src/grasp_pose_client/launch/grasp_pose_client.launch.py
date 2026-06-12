@@ -176,7 +176,10 @@ def generate_launch_description() -> LaunchDescription:
             # the FINGER PIVOT on the raw grasp point (the depth the user validated
             # as a correct-looking grasp). Reduce x toward 0 (= fingertip center)
             # if fingers hit the table or the palm presses into the object.
-            "grasp_offset_tool_xyz": [0.0945, 0.0, 0.0],
+            # y = +0.02 calibrated 2026-06-12: raw grasp point used to line up with
+            # the RIGHT (passive) claw; verified tool-frame (rotates with the
+            # gripper) by grasping the same object at two yaws ~90° apart.
+            "grasp_offset_tool_xyz": [0.0945, 0.02, 0.0],
             "ik_urdf_path": LaunchConfiguration("ik_urdf_path"),
             "joint_states_topic": LaunchConfiguration("joint_states_topic"),
             "log_dir": LaunchConfiguration("log_dir"),

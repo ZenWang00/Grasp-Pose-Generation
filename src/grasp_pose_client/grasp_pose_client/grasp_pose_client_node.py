@@ -710,9 +710,16 @@ class GraspPoseClientNode(Node):
         self._arm_stop_run_id = result.run_id
 
         # Debug: raw camera-frame overlay + grasp TF frames for RViz verification.
+        # grasp_best shows the RAW grasp point (no offsets) — i.e. the object —
+        # while /commanded_pose carries the offset-adjusted TCP target, so the
+        # marker stays meaningful regardless of grasp_offset_* tuning.
         cam_best = self._publish_debug_camera(result.grasps, result.frame_id, stamp)
+        raw_best = self._build_pose_stamped(
+            self._transform_to_base(result.grasps[0], T_base_camera),
+            stamp=stamp, frame_id=publish_frame_id,
+        )
         self._set_grasp_tfs(
-            base_pose=grasps_msgs[0].pose,
+            base_pose=raw_best.pose if raw_best is not None else grasps_msgs[0].pose,
             base_frame=publish_frame_id,
             cam_pose=cam_best.pose if cam_best is not None else None,
             cam_frame=result.frame_id,
@@ -1158,9 +1165,17 @@ class GraspPoseClientNode(Node):
             self._arm_stop_run_id = result.run_id
 
         # Debug: raw camera-frame overlay + grasp TF frames for RViz verification.
+        # grasp_best shows the RAW grasp point (no offsets) when a base-frame
+        # transform exists; see _poll_publish for rationale.
         cam_best = self._publish_debug_camera(result.grasps, result.frame_id, stamp)
+        raw_best = None
+        if T_base_camera is not None and result.grasps:
+            raw_best = self._build_pose_stamped(
+                self._transform_to_base(result.grasps[0], T_base_camera),
+                stamp=stamp, frame_id=publish_frame_id,
+            )
         self._set_grasp_tfs(
-            base_pose=response.grasps[0].pose,
+            base_pose=raw_best.pose if raw_best is not None else response.grasps[0].pose,
             base_frame=publish_frame_id,
             cam_pose=cam_best.pose if cam_best is not None else None,
             cam_frame=result.frame_id,
