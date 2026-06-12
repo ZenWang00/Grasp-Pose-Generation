@@ -83,6 +83,12 @@ class GraspPoseClientNode(Node):
         # hand-eye / extrinsic bias. Axes follow LIO_base_link (the IK URDF root):
         #   +x = forward (arm extend direction), +y = left, +z = up.
         self.declare_parameter("grasp_offset_base_xyz", [0.0, 0.0, 0.0])
+        # Constant correction expressed in the FINAL TCP frame (after the grasp→TCP
+        # axis remap): +x = approach (deeper into the grasp), +y = closing axis
+        # (between the fingers), +z = lateral. Rotates with the commanded grasp
+        # orientation, so use it for tool-side biases (hand-eye lateral error,
+        # asymmetric passive finger, grasp depth preference).
+        self.declare_parameter("grasp_offset_tool_xyz", [0.0, 0.0, 0.0])
         self.declare_parameter("ik_urdf_path", "")
         self.declare_parameter("ik_base_link", "LIO_base_link")
         self.declare_parameter("ik_tip_link", "lio_tcp_link")
@@ -115,6 +121,13 @@ class GraspPoseClientNode(Node):
             )
             _off = [0.0, 0.0, 0.0]
         self._grasp_offset_base: np.ndarray = np.array(_off, dtype=np.float64)
+        _off_tool = list(self.get_parameter("grasp_offset_tool_xyz").value or [0.0, 0.0, 0.0])
+        if len(_off_tool) != 3:
+            self.get_logger().warn(
+                f"grasp_offset_tool_xyz must have 3 elements, got {_off_tool}; ignoring."
+            )
+            _off_tool = [0.0, 0.0, 0.0]
+        self._grasp_offset_tool: np.ndarray = np.array(_off_tool, dtype=np.float64)
         self._ik_base_link: str = str(self.get_parameter("ik_base_link").value)
         self._ik_tip_link: str = str(self.get_parameter("ik_tip_link").value)
         self._ik_max_iter: int = int(self.get_parameter("ik_max_iter").value)
@@ -142,7 +155,8 @@ class GraspPoseClientNode(Node):
         self._grasp_log = GraspLogger(_log_dir)
         self._grasp_log.write("session_start", node="grasp_pose_client",
                                server_url=self._server_url,
-                               grasp_offset_base_xyz=list(self._grasp_offset_base))
+                               grasp_offset_base_xyz=list(self._grasp_offset_base),
+                               grasp_offset_tool_xyz=list(self._grasp_offset_tool))
         self.get_logger().info(f"Grasp logger active: {self._grasp_log.path}")
 
         # Delayed arm-stop snapshot: record the TCP pose a fixed time after each
@@ -156,6 +170,13 @@ class GraspPoseClientNode(Node):
         _joint_states_topic = str(self.get_parameter("joint_states_topic").value)
         self._joint_state_sub = self.create_subscription(
             JointState, _joint_states_topic, self._joint_state_cb, 10
+        )
+        # Real robot joints straight from the platform — used to cross-check the
+        # arm_stopped TF snapshot with our own FK, so a second (stale/mismatched)
+        # TF broadcaster can never silently fake a perfect log entry.
+        self._real_joint_positions: dict[str, float] = {}
+        self._real_joint_state_sub = self.create_subscription(
+            JointState, "/lio_joint_states", self._real_joint_state_cb, 10
         )
         self._init_ik_solver()
 
@@ -297,6 +318,32 @@ class GraspPoseClientNode(Node):
         for name, pos in zip(msg.name, msg.position):
             self._joint_positions[name] = float(pos)
 
+    def _real_joint_state_cb(self, msg: JointState) -> None:
+        for name, pos in zip(msg.name, msg.position):
+            self._real_joint_positions[name] = float(pos)
+
+    def _fk_real_tcp(self) -> Optional[np.ndarray]:
+        """TCP position in LIO_base_link from the REAL robot joints (/lio_joint_states),
+        computed with our own Pinocchio model — independent of the TF tree."""
+        if self._pin_model is None or not self._real_joint_positions:
+            return None
+        import pinocchio as pin
+        q = pin.neutral(self._pin_model)
+        matched = 0
+        for jid in range(1, self._pin_model.njoints):
+            joint = self._pin_model.joints[jid]
+            if joint.nq != 1:
+                continue
+            jname = self._pin_model.names[jid]
+            if jname in self._real_joint_positions:
+                q[joint.idx_q] = self._real_joint_positions[jname]
+                matched += 1
+        if matched < 6:
+            return None
+        pin.forwardKinematics(self._pin_model, self._pin_data, q)
+        pin.updateFramePlacements(self._pin_model, self._pin_data)
+        return np.array(self._pin_data.oMf[self._pin_ee_id].translation)
+
     def _arm_stop_poll(self) -> None:
         """1 Hz timer: once arm_stop_log_delay_s has elapsed since the last
         commanded_pose, log the current TCP pose as arm_stopped (one-shot).
@@ -313,15 +360,35 @@ class GraspPoseClientNode(Node):
         self._log_arm_stop(T)
 
     def _log_arm_stop(self, T: np.ndarray) -> None:
-        """Write an arm_stopped log entry from the given TCP TF matrix."""
+        """Write an arm_stopped log entry from the given TCP TF matrix.
+
+        Also records ``position_fk_real``: the TCP position recomputed from the
+        REAL robot joints with our own Pinocchio model. If it disagrees with the
+        TF value, a second TF broadcaster is polluting the tree and the TF-based
+        snapshot must not be trusted.
+        """
         t = T[:3, 3]
         q = self._rot_to_quat_xyzw(T[:3, :3])
+        extra = {}
+        p_fk = self._fk_real_tcp()
+        if p_fk is not None:
+            extra["position_fk_real"] = {
+                "x": float(p_fk[0]), "y": float(p_fk[1]), "z": float(p_fk[2])
+            }
+            mismatch = float(np.linalg.norm(p_fk - t))
+            extra["tf_vs_fk_real_m"] = mismatch
+            if mismatch > 0.005:
+                self.get_logger().warn(
+                    f"arm_stopped: TF tcp and FK(real joints) disagree by "
+                    f"{mismatch*1000:.1f} mm — TF tree may have a second broadcaster."
+                )
         self._grasp_log.write(
             "arm_stopped",
             run_id=self._arm_stop_run_id,
             frame=self._robot_base_frame_id,
             position={"x": float(t[0]), "y": float(t[1]), "z": float(t[2])},
             orientation={"x": q[0], "y": q[1], "z": q[2], "w": q[3]},
+            **extra,
         )
 
     @staticmethod
@@ -606,7 +673,7 @@ class GraspPoseClientNode(Node):
         scores: list[float] = []
         widths: list[float] = []
         for entry in result.grasps:
-            pose_data = self._transform_to_base(entry, T_base_camera, self._grasp_offset_base)
+            pose_data = self._transform_to_base(entry, T_base_camera, self._grasp_offset_base, self._grasp_offset_tool)
             pose_stamped = self._build_pose_stamped(pose_data, stamp=stamp, frame_id=publish_frame_id)
             if pose_stamped is None:
                 continue
@@ -721,11 +788,15 @@ class GraspPoseClientNode(Node):
         entry: dict,
         T_base_camera: np.ndarray,
         offset_base: Optional[np.ndarray] = None,
+        offset_tool: Optional[np.ndarray] = None,
     ) -> dict:
         """Apply T_base_camera to a camera-frame grasp entry, returning base-frame position/quaternion.
 
         ``offset_base`` (meters, optional) is a constant correction added to the
         resulting base-frame position to absorb a systematic extrinsic bias.
+        ``offset_tool`` (meters, optional) is a constant correction expressed in
+        the final TCP frame (x=approach, y=closing, z=lateral); it rotates with
+        the commanded grasp orientation.
         """
         pose_4x4 = entry.get("pose_4x4")
         if pose_4x4 is not None:
@@ -748,6 +819,8 @@ class GraspPoseClientNode(Node):
         T_grasp_base = T_base_camera @ T_grasp_cam
         R_base = T_grasp_base[:3, :3] @ GRASP_TO_TCP_AXES
         t_base = T_grasp_base[:3, 3]
+        if offset_tool is not None:
+            t_base = t_base + R_base @ offset_tool
         if offset_base is not None:
             t_base = t_base + offset_base
 
@@ -877,12 +950,17 @@ class GraspPoseClientNode(Node):
         cam_pose: Optional[Pose],
         cam_frame: str,
     ) -> None:
-        """Stash the latest best grasp so the timer can keep its TF frames alive."""
+        """Stash the latest best grasp so the timer can keep its TF frames alive.
+
+        Only the base-frame pose is kept alive: the camera rides on the arm, so a
+        continuously re-stamped camera-frame TF drifts away with the gripper once
+        the arm moves and looks like a target the gripper "never reaches" in RViz.
+        The camera-frame pose is still published once on /best_grasp_pose_cam.
+        """
+        del cam_pose, cam_frame  # intentionally not broadcast as TF
         tfs: list[tuple[str, str, Pose]] = []
         if base_pose is not None:
             tfs.append(("grasp_best", base_frame, base_pose))
-        if cam_pose is not None:
-            tfs.append(("grasp_best_cam", cam_frame, cam_pose))
         with self._grasp_tf_lock:
             self._grasp_tfs = tfs
 
@@ -1035,7 +1113,7 @@ class GraspPoseClientNode(Node):
         scores: list[float] = []
         widths: list[float] = []
         for entry in result.grasps:
-            pose_data = self._transform_to_base(entry, T_base_camera, self._grasp_offset_base) if T_base_camera is not None else entry
+            pose_data = self._transform_to_base(entry, T_base_camera, self._grasp_offset_base, self._grasp_offset_tool) if T_base_camera is not None else entry
             pose_stamped = self._build_pose_stamped(
                 pose_data, stamp=stamp, frame_id=publish_frame_id
             )

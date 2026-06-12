@@ -75,7 +75,10 @@
         </xacro:fisheye>
 
         <xacro:p_arm name="lio" parent="LIO_robot_base_link" version="p_rob_2R">
-            <origin xyz="0 0 0.212" rpy="0 0 ${joint1_frame_rotation}" />
+            <!-- Match the platform's live robot_description: lio_joint1 sits directly
+                 at LIO_robot_base_link (origin 0, not z=0.212). Keeps the RViz/sim
+                 model consistent with the platform TF and the panda_ik URDFs. -->
+            <origin xyz="0 0 0" rpy="0 0 ${joint1_frame_rotation}" />
         </xacro:p_arm>
     </xacro:if>
 
@@ -111,7 +114,10 @@
         </xacro:fisheye>
 
         <xacro:p_arm name="lio" parent="LIO_robot_base_link" version="p_rob_2R">
-            <origin xyz="0 0 0.212" rpy="0 0 ${joint1_frame_rotation}" />
+            <!-- Match the platform's live robot_description: lio_joint1 sits directly
+                 at LIO_robot_base_link (origin 0, not z=0.212). Keeps the RViz/sim
+                 model consistent with the platform TF and the panda_ik URDFs. -->
+            <origin xyz="0 0 0" rpy="0 0 ${joint1_frame_rotation}" />
         </xacro:p_arm>
     </xacro:if>
 

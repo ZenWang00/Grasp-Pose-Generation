@@ -251,23 +251,27 @@ fn optimize_robot(robot_start: *mut [f64;6], position: &Vector3<f64>, orientatio
     //     2.8973,
     // ];
 
+    // LIO joint limits from the platform robot_description / URDF (a 0.1 rad
+    // safety shrink is applied below). The previous hand-tuned values were up to
+    // 0.36 rad narrower on joints 2/3/5, which clamped wrist-heavy (side-grasp)
+    // orientations ~45 deg short of the target.
     let mut lb = [
         //lio Joint
-        -2.792527,
-        -1.745329,
-        -1.745329,
-        -2.792527,
-        -1.745329,
-        -2.792527,
+        -2.9670597,
+        -1.9198622,
+        -2.0071286,
+        -2.9670597,
+        -2.0071286,
+        -2.9670597,
     ];
-    
+
     let mut ub = [
-        2.792527,
-        1.745329,
-        1.745329,
-        2.792527,
-        1.745329,
-        2.792527,
+        2.9670597,
+        1.9198622,
+        2.0071286,
+        2.9670597,
+        2.0071286,
+        2.9670597,
     ];
 
     let mut middle = [0.;6];

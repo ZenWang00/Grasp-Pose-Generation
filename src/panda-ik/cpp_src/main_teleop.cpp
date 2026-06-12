@@ -62,7 +62,12 @@ int main(int argc, char **argv) {
 
     geometry_msgs::msg::Twist commandedVel;
 
-    std::string frame_id = "lio_tcp_joint";
+    // IK tip is ALWAYS the TCP. Never take it from incoming message headers:
+    // velocity_controller stamps its twists with "lio_gripper_joint" (the finger
+    // pivot, 0.1245 m short of the TCP along the approach axis), and letting that
+    // override the tip mid-grasp made the arm overshoot every grasp by exactly
+    // that distance.
+    const std::string frame_id = "lio_tcp_joint";
     bool initialized = false;
     bool start = true;
     bool run = true;
@@ -81,7 +86,6 @@ int main(int argc, char **argv) {
         [&](geometry_msgs::msg::TwistStamped::SharedPtr msg) {
             RCLCPP_INFO(node->get_logger(), "Got twist input!");
             commandedVel = msg->twist;
-            frame_id = msg->header.frame_id;
             start = true;
         });
 
@@ -109,7 +113,6 @@ int main(int argc, char **argv) {
         [&](geometry_msgs::msg::PoseStamped::SharedPtr msg) {
             RCLCPP_INFO(node->get_logger(), "Received pose update");
             commandedPose.pose = msg->pose;
-            frame_id = msg->header.frame_id;
             start = true;
         });
 
@@ -144,7 +147,6 @@ int main(int argc, char **argv) {
                 }
             }
             commandedVel = geometry_msgs::msg::Twist();  // zero velocity
-            frame_id = "lio_tcp_joint";
             start = true;
         });
 
