@@ -160,11 +160,13 @@ def generate_launch_description() -> LaunchDescription:
             # Systematic extrinsic-bias correction (meters) added to the grasp position
             # AFTER transformation into robot_base_frame_id (= LIO_base_link).
             # Axes follow LIO_base_link: +x = arm-forward, +y = left, +z = up.
-            # Calibrated 2026-06-12 from 8 converged logged runs (orientation error
-            # <1°, two days of sessions): arm_stopped − commanded averaged
-            # (+0.122, +0.005, −0.223) with std (0.005, 0.021, 0.013), so we
-            # pre-subtract it here.
-            "grasp_offset_base_xyz": [-0.15, 0.0, 0.3],
+            # 2026-06-12: reset to zero. The ~(+0.122, 0, −0.22) cmd-vs-stop mismatch
+            # this used to compensate was traced to two execution-side bugs, now fixed:
+            # (1) panda_ik URDFs placed lio_joint1 0.212 m higher than the platform's
+            #     robot_description (dz), and (2) ik_stream_to_action advanced its
+            #     stream even when move_joints goals were rejected (dx undershoot).
+            # If a small constant residual remains, recalibrate from fresh logs.
+            "grasp_offset_base_xyz": [0.0, 0.0, 0.0],
             "ik_urdf_path": LaunchConfiguration("ik_urdf_path"),
             "joint_states_topic": LaunchConfiguration("joint_states_topic"),
             "log_dir": LaunchConfiguration("log_dir"),
