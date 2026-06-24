@@ -102,8 +102,11 @@ class ExecuteFunctionClient(Node):
         if not _changed(desired, self._last_cmd_deg, self._eps):
             return
 
+        # _last_cmd_deg advances only after the server ACCEPTS the goal (see
+        # _on_sent); a rejected/failed step is retried on the next tick instead
+        # of being silently skipped, so the stream can never end short of the
+        # final IK target.
         self._send_move_joints(desired)
-        self._last_cmd_deg = desired
 
     def _send_move_joints(self, arm6_deg):
         # Do NOT cancel previous goal on every tick; let the server handle preemption if it can.
@@ -133,6 +136,7 @@ class ExecuteFunctionClient(Node):
                 self.get_logger().warn("Goal rejected by server.")
                 return
             self._goal_handle = gh
+            self._last_cmd_deg = arm6_deg
 
         fut.add_done_callback(_on_sent)
 

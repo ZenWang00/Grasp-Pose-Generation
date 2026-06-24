@@ -86,6 +86,11 @@ def generate_launch_description():
 
 
         # Robot State Publisher (simulation only: physical_robot == false)
+        # NOTE: when the real robot is up, its own /lio_robot_state_publisher already
+        # broadcasts the same TF frames from REAL joint states; this sim publisher
+        # (driven by the IK solution) then fights over the same frames in RViz.
+        # Prefer physical_robot:=true on the real robot (ik_interface then feeds
+        # real joints to this publisher) — or rely on the platform TF alone.
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',

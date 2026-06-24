@@ -1,29 +1,29 @@
-# `/commanded_pose` 消费链路
+# `/commanded_pose` Consumption Chain
 
-本文描述 `grasp_pose_client` 向 `/commanded_pose` 发布 `PoseStamped` 之后，下游各节点如何消费该消息、完成关节角求解，并最终驱动机械臂运动。
+This document describes what happens after `grasp_pose_client` publishes a `PoseStamped` to `/commanded_pose`: how downstream nodes consume the message, solve for joint angles, and ultimately drive the robot arm.
 
-> 上游发布逻辑见 [coordinate_transform_chain.md](coordinate_transform_chain.md)。
+> For the upstream publishing logic see [coordinate_transform_chain.md](coordinate_transform_chain.md).
 
 ---
 
-## 总体链路
+## Overall pipeline
 
 ```
 /commanded_pose  (PoseStamped, frame_id=LIO_base_link)
         │
         ▼
-panda_ik_teleop 节点  [main_teleop.cpp]
-  ├─ TF2 变换: frame_id → LIO_base_link（frame_id 已是 LIO_base_link，为恒等变换）
-  └─ PANOC IK 求解 (Rust, k::Chain)
+panda_ik_teleop node  [main_teleop.cpp]
+  ├─ TF2 transform: LIO_base_link → LIO_robot_base_link (executor URDF root; z+0.2655 m, Rz+90°)
+  └─ PANOC IK solve (Rust, k::Chain)
         │
         ▼
-/panda_ik_teleop/output  (Float64MultiArray, 6×关节角, 弧度)
+/panda_ik_teleop/output  (Float64MultiArray, 6× joint angles, radians)
         │
         ▼
-ik_stream_to_action 节点  [ik_stream_to_action.py]
-  ├─ 弧度 → 角度
-  ├─ 速率限制 (≤2°/tick, 50 Hz)
-  └─ 发送 ExecuteFunction action goal
+ik_stream_to_action node  [ik_stream_to_action.py]
+  ├─ radians → degrees
+  ├─ rate limiting (≤2°/tick, 50 Hz)
+  └─ send ExecuteFunction action goal
         │
         ▼
 /execute_function  (fp_core_msgs/action/ExecuteFunction)
@@ -31,69 +31,72 @@ ik_stream_to_action 节点  [ik_stream_to_action.py]
   joint_position = [deg×6]
         │
         ▼
-机械臂硬件
+Robot arm hardware
 ```
 
 ---
 
-## 节点 1：`panda_ik_teleop`
+## Node 1: `panda_ik_teleop`
 
-**源文件**：[cpp_src/main_teleop.cpp](../../panda-ik/cpp_src/main_teleop.cpp)  
-**节点名**：`panda_ik_teleop`  
-**运行频率**：100 Hz 主循环
+**Source file**: [cpp_src/main_teleop.cpp](../../panda-ik/cpp_src/main_teleop.cpp)  
+**Node name**: `panda_ik_teleop`  
+**Run rate**: 100 Hz main loop
 
-### 1.1 订阅 `/commanded_pose`
+### 1.1 Subscription to `/commanded_pose`
 
 ```cpp
 commanded_pose_sub = node->create_subscription<PoseStamped>(
     "/commanded_pose", 1,
     [&](PoseStamped::SharedPtr msg) {
-        // TF2 帧变换：msg->header.frame_id 现为 "LIO_base_link"，
-        // 与目标帧相同，transform() 为恒等变换（不改变数值）。
+        // The executor URDF (lio_arm.urdf) is rooted at base_footprint, which
+        // coincides with LIO_robot_base_link — so the pose is TF-transformed
+        // from LIO_base_link into LIO_robot_base_link (z+0.2655 m, Rz+90°).
         PoseStamped transformed =
-            tfBuffer.transform(*msg, "LIO_base_link", tf2::durationFromSec(0.2));
+            tfBuffer.transform(*msg, "LIO_robot_base_link", tf2::durationFromSec(0.2));
         commandedPose.pose = transformed.pose;
 
-        commandedVel = Twist();   // 清零速度（静止目标）
+        commandedVel = Twist();   // zero out velocity (static target)
         frame_id = "lio_tcp_joint";
-        start = true;             // 触发主循环
+        start = true;             // trigger the main loop
     });
 ```
 
-**说明**：`/commanded_pose` 现在发布在 `LIO_base_link` 系（`robot_base_frame_id` 已统一到
-IK URDF 根帧），`panda_ik_teleop` 的 `tfBuffer.transform(..., "LIO_base_link")` 为恒等变换，
-数值不变，代码无需改动。TF 失败时降级：直接用原始 pose。
+**Note**: `/commanded_pose` is published in `LIO_base_link` (`robot_base_frame_id`), while the
+Rust PANOC IK solves in the executor URDF root frame `base_footprint` ≡ `LIO_robot_base_link`.
+The TF2 transform above bridges the two (they differ by z+0.2655 m and Rz+90°). On TF failure
+the message is **rejected** (unless its frame_id is already `LIO_robot_base_link`) — executing
+a pose in the wrong frame would send the arm to a rotated/offset target.
 
-### 1.2 主循环（100 Hz）
+### 1.2 Main loop (100 Hz)
 
-每次循环对当前 `commandedPose` 执行：
+Each iteration processes the current `commandedPose`:
 
 ```
-1. 速度积分（teleop 模式）：
+1. Velocity integration (teleop mode):
    position += vel * (1/freq)
-   orientation = motion_rot * orientation  → 归一化
+   orientation = motion_rot * orientation  → normalize
 
-2. 调用 Rust IK 求解器：
+2. Call the Rust IK solver:
    solve(joint_angles, "lio_tcp_joint",
          position, orientation, velocity, errors, w=1.0)
-   → 更新 joint_angles[6]（弧度）
+   → updates joint_angles[6] (radians)
 
-3. 连续性检查（initialized 后）：
+3. Continuity check (after initialized):
    |joint_angles[i] - prev[i]| ≤ 0.1 rad  →  valid
-   否则检查末端位置是否在 ±5 cm 范围内
+   otherwise check whether the end-effector position is within ±5 cm
 
-4. 发布 /panda_ik_teleop/output（Float64MultiArray, 6×rad）
-5. 发布 panda_commanded_pose（PoseStamped，用于 RViz 调试）
+4. Publish /panda_ik_teleop/output (Float64MultiArray, 6×rad)
+5. Publish panda_commanded_pose (PoseStamped, for RViz debugging)
 ```
 
 ---
 
-## 节点 1 核心：Rust PANOC IK 求解器
+## Node 1 core: Rust PANOC IK solver
 
-**源文件**：[src/lib.rs](../../panda-ik/src/lib.rs)  
-**库**：`k`（前向运动学）+ `optimization_engine`（PANOC 优化器）
+**Source file**: [src/lib.rs](../../panda-ik/src/lib.rs)  
+**Libraries**: `k` (forward kinematics) + `optimization_engine` (PANOC optimizer)
 
-### IK 问题定义
+### IK problem definition
 
 ```
 minimize   J(q) = 100·||p(q) - p_target||²
@@ -103,16 +106,16 @@ minimize   J(q) = 100·||p(q) - p_target||²
 subject to lb ≤ q ≤ ub
 ```
 
-| 项 | 含义 |
+| Term | Meaning |
 |----|------|
-| `p(q)` | 当前关节角 `q` 下 `lio_tcp_joint` 的笛卡尔位置 |
-| `p_target` | 目标位置（来自 TF 变换后的 pose） |
-| `w·rotation_cost` | 姿态误差（角度平方），权重 `w=1.0` |
-| `movement_cost` | 惩罚与初始状态 `q0` 的偏差，鼓励小幅运动 |
+| `p(q)` | Cartesian position of `lio_tcp_joint` at joint angles `q` |
+| `p_target` | Target position (from the TF-transformed pose) |
+| `w·rotation_cost` | Orientation error (squared angle), weight `w=1.0` |
+| `movement_cost` | Penalizes deviation from the initial state `q0`, encouraging small motions |
 
-### 关节限位（弧度）
+### Joint limits (radians)
 
-| 关节 | 下限 | 上限 |
+| Joint | Lower | Upper |
 |------|------|------|
 | joint 1 | -2.793 | +2.793 |
 | joint 2 | -1.745 | +1.745 |
@@ -121,51 +124,51 @@ subject to lb ≤ q ≤ ub
 | joint 5 | -1.745 | +1.745 |
 | joint 6 | -2.793 | +2.793 |
 
-（实际取值收缩 ±0.1 rad 作为软边界）
+(The actual values are shrunk by ±0.1 rad as a soft margin.)
 
-### 求解器参数
+### Solver parameters
 
-| 参数 | 值 | 含义 |
+| Parameter | Value | Meaning |
 |------|----|------|
-| 最大迭代次数 | 50 | PANOC 内层迭代 |
-| 最大求解时间 | 7 ms | 超时则返回当前最优 |
-| 梯度方法 | 有限差分 | h = 1000·ε_f64 |
-| PANOC cache | 6 DOF, tol=1e-6 | 全局单例 |
+| Max iterations | 50 | PANOC inner iterations |
+| Max solve time | 7 ms | Returns the current best on timeout |
+| Gradient method | Finite differences | h = 1000·ε_f64 |
+| PANOC cache | 6 DOF, tol=1e-6 | Global singleton |
 
-### 错误标志（`errors[4]`）
+### Error flags (`errors[4]`)
 
-| 索引 | 含义 |
+| Index | Meaning |
 |------|------|
-| `[0]` | 优化器抛出异常 → fallback 到 `joint_angles` |
-| `[1]` | 未收敛（时间超限或迭代超限） |
-| `[2,3]` | 未使用 |
+| `[0]` | Optimizer threw an exception → fall back to `joint_angles` |
+| `[1]` | Did not converge (time or iteration limit exceeded) |
+| `[2,3]` | Unused |
 
 ---
 
-## 节点 2：`ik_stream_to_action`
+## Node 2: `ik_stream_to_action`
 
-**源文件**：[lio_specific_pkg_ros2/ik_stream_to_action.py](../../lio_specific_pkg_ros2/lio_specific_pkg_ros2/ik_stream_to_action.py)  
-**节点名**：`joint_io_client`
+**Source file**: [lio_specific_pkg_ros2/ik_stream_to_action.py](../../lio_specific_pkg_ros2/lio_specific_pkg_ros2/ik_stream_to_action.py)  
+**Node name**: `joint_io_client`
 
-### 订阅 `/panda_ik/output`（或指定 topic）
+### Subscription to `/panda_ik/output` (or a configured topic)
 
 ```python
 def _ik_cb(self, msg: Float64MultiArray):
     arm6_deg = [math.degrees(x) for x in msg.data[:6]]
-    self._latest_ik_deg = arm6_deg   # 仅缓存，不立即发送
+    self._latest_ik_deg = arm6_deg   # cache only, do not send immediately
 ```
 
-### 控制循环（50 Hz 定时器）
+### Control loop (50 Hz timer)
 
 ```
-1. 速率限制：
+1. Rate limiting:
    desired[i] = clamp(target[i], last[i] ± max_step_deg)
-   默认 max_step_deg = 2.0°/tick
+   default max_step_deg = 2.0°/tick
 
-2. 死区过滤：
-   if |desired[i] - last_cmd[i]| < eps (0.02°): 跳过
+2. Deadband filtering:
+   if |desired[i] - last_cmd[i]| < eps (0.02°): skip
 
-3. 发送 ExecuteFunction action goal：
+3. Send ExecuteFunction action goal:
    action  = "move_joints"
    bridge  = "core"
    arguments = {
@@ -174,49 +177,51 @@ def _ik_cb(self, msg: Float64MultiArray):
    }
 ```
 
-### 速率限制的作用
+### Purpose of rate limiting
 
-100 Hz IK 每次更新关节角最多 2°，50 Hz 控制循环确保发送频率可控，防止突变指令损伤电机。
+The 100 Hz IK can change joint angles by at most 2° per update, and the 50 Hz control loop keeps the send rate bounded, preventing abrupt commands from damaging the motors.
 
 ---
 
-## 完整数据流表
+## Full data-flow table
 
-| 阶段 | 话题/接口 | 消息类型 | 帧/单位 |
+| Stage | Topic/Interface | Message type | Frame/Unit |
 |------|-----------|----------|---------|
-| VLA Server → 客户端 | HTTP JSON | dict | `camera_color_optical_frame` |
-| 客户端 → IK节点 | `/commanded_pose` | `PoseStamped` | `LIO_base_link` |
-| IK节点内（TF 恒等） | `commandedPose` (内存) | `Pose` | `LIO_base_link` |
-| IK节点 → 动作桥 | `/panda_ik_teleop/output` | `Float64MultiArray` | 弧度 × 6 |
-| 动作桥 → 硬件 | `/execute_function` | `ExecuteFunction` goal | 角度(°) × 6 |
+| VLA Server → client | HTTP JSON | dict | `camera_color_optical_frame` |
+| Client → IK node | `/commanded_pose` | `PoseStamped` | `LIO_base_link` |
+| Inside IK node (after TF) | `commandedPose` (in memory) | `Pose` | `LIO_robot_base_link` |
+| IK node → action bridge | `/panda_ik_teleop/output` | `Float64MultiArray` | radians × 6 |
+| Action bridge → hardware | `/execute_function` | `ExecuteFunction` goal | degrees (°) × 6 |
 
 ---
 
-## 两种 IK 节点的区别
+## Differences between the two IK nodes
 
-项目中存在两个 IK 节点实现：
+The project contains two IK node implementations:
 
-| | `main_teleop.cpp`（当前使用） | `main.cpp`（旧版） |
+| | `main_teleop.cpp` (currently used) | `main.cpp` (legacy) |
 |--|-------------------------------|-------------------|
-| 节点名 | `panda_ik_teleop` | `panda_ik` |
-| `/commanded_pose` 处理 | **有 TF 变换**（→ `LIO_base_link`） | 无变换，直接使用 |
-| teleop 速度支持 | 有（`/input` twist） | 无 |
-| 方向指令支持 | 有（`/directions` string） | 无 |
-| 轨迹跟随 | 有（`/simulator/end_effector_pose`） | 无 |
-| `weighted_pose` 模式 | 无 | 有（`/weighted_pose`） |
+| Node name | `panda_ik_teleop` | `panda_ik` |
+| `/commanded_pose` handling | **With TF transform** (→ `LIO_robot_base_link`) | No transform, used directly |
+| Teleop velocity support | Yes (`/input` twist) | No |
+| Direction command support | Yes (`/directions` string) | No |
+| Trajectory following | Yes (`/simulator/end_effector_pose`) | No |
+| `weighted_pose` mode | No | Yes (`/weighted_pose`) |
 
-`main_teleop.cpp` 是当前实际运行的版本（见最近 git commit）。
+`main_teleop.cpp` is the version actually running today (see recent git commits).
 
 ---
 
-## 关键注意事项
+## Key caveats
 
-1. **坐标系统一**：`robot_base_frame_id = "LIO_base_link"`，与 Pinocchio 可行性检查（`ik_base_link`）和 Rust PANOC IK 的 URDF 根帧完全一致。`panda_ik_teleop` 的 TF 转换为恒等变换，不改变数值。
+1. **Coordinate frames**: `robot_base_frame_id = "LIO_base_link"` is shared by the published poses and the Pinocchio feasibility check (`ik_base_link`, URDF `lio_arm_reframed.urdf`). The Rust PANOC IK uses a different URDF (`lio_arm.urdf`) rooted at `base_footprint` ≡ `LIO_robot_base_link`, so `panda_ik_teleop` TF-transforms incoming poses into `LIO_robot_base_link` before solving (z+0.2655 m, Rz+90°) and rejects the message if that transform fails.
 
-2. **IK 收敛时间**：单次求解限 7 ms（50 次迭代），未收敛时 `errors[1]=true` 但仍返回当前最优解，不会阻塞控制循环。
+2. **IK convergence time**: a single solve is capped at 7 ms (50 iterations). On non-convergence, `errors[1]=true` but the current best solution is still returned, so the control loop never blocks.
 
-3. **速率限制**：`ik_stream_to_action` 的 2°/tick 限制是最后一道保护，防止 IK 大跳变直接下发到硬件。
+3. **Rate limiting**: the 2°/tick limit in `ik_stream_to_action` is the last line of defense, preventing large IK jumps from being sent straight to the hardware.
 
-4. **关节初始状态**：`joint_angles` 硬编码初始值 `{-1.621, -1.197, 1.274, 0.025, 1.482, -0.057}`（rad），每次 IK 成功后就地更新，作为下次求解的热启动种子。
+4. **Initial joint state**: `joint_angles` is hard-coded to `{-1.621, -1.197, 1.274, 0.025, 1.482, -0.057}` (rad) and updated in place after every successful IK solve, serving as the warm-start seed for the next solve.
 
-5. **grasp_offset_base_xyz 轴方向**：offset 在 `LIO_base_link` 系下生效（+x=前伸, +y=左, +z=上），与之前文档记录的 `LIO_robot_base_link` 系（两者差 Rz(90°)）不同，重新标定时需注意。
+5. **Axis convention of `grasp_offset_base_xyz`**: the offset is applied in the `LIO_base_link` frame (+x = forward reach, +y = left, +z = up). This differs from the previously documented `LIO_robot_base_link` frame (the two differ by Rz(90°)) — keep this in mind when recalibrating.
+
+6. **TCP axis convention**: the quaternion in `/commanded_pose` is the target orientation of `lio_tcp_link`, whose convention is **X = approach (tool axis), Y = closing, Z = lateral** (from the URDF: `lio_tcp_joint` sits 0.189 m along gripper +X with `rpy=0`, and the fingers swing about Z). `grasp_pose_client` already remaps the grasp convention (X=closing, Z=approach) via `GRASP_TO_TCP_AXES` before publishing, so `panda_ik_teleop` consumes the quaternion as-is with no further correction. Verification in RViz: after the arm reaches the target, the TF frame `lio_tcp_link` must coincide with `/commanded_pose` in position and all three axes.

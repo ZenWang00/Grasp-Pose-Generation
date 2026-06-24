@@ -128,9 +128,11 @@ flowchart TD
 
   E --> F["Apply constant offset\np_final = p_grasp_base + grasp_offset_base_xyz\nabsorbs hand-eye calibration residual\ndefault: [0.0, 0.0, 0.0] m"]
 
-  F --> G["Rotation matrix → quaternion\nShepperd's method\nconstraint: w ≥ 0 (canonical hemisphere)"]
+  F --> F2["Axis remap: R @ GRASP_TO_TCP_AXES\ngrasp (X=closing, Z=approach)\n→ LIO TCP (X=approach, Y=closing)"]
 
-  G --> H["PoseStamped\nframe_id = LIO_robot_base_link\nposition: x, y, z (m)\norientation: qx, qy, qz, qw"]
+  F2 --> G["Rotation matrix → quaternion\nShepperd's method\nconstraint: w ≥ 0 (canonical hemisphere)"]
+
+  G --> H["PoseStamped\nframe_id = LIO_base_link\nposition: x, y, z (m)\norientation: qx, qy, qz, qw"]
 
   H --> I["Publish ~/best_grasp\nPublish /commanded_pose"]
 ```
@@ -158,8 +160,8 @@ graph TD
   ODOM["odom"]
   BF["base_footprint\n(mobile platform, dynamic ~40 Hz)"]
   PBL["platform_base_link\n(static)"]
-  LBL["LIO_base_link\n(arm assembly mount, static)\n= Pinocchio IK world frame"]
-  LRBL["LIO_robot_base_link\n(robot_base_frame_id)\nstatic: t=[0,0,0.266] R=Rz(90°)"]
+  LBL["LIO_base_link\n(arm assembly mount, static)\n= robot_base_frame_id\n= Pinocchio IK world frame"]
+  LRBL["LIO_robot_base_link\n(arm mount link in URDF)\nstatic: t=[0,0,0.266] R=Rz(90°)"]
   L12["lio_link12"]
   DOTS["... lio_link23→34→45→56→lio_link6G\n(all dynamic ~10 Hz)"]
   GIF["lio_gripper_interface_link\n(static)"]
@@ -184,11 +186,11 @@ graph TD
 
 | Frame | Role | Used by |
 |---|---|---|
-| `LIO_base_link` | Arm assembly mounting point on platform; root link of `lio_arm_reframed.urdf`; Pinocchio world frame | IK TF lookup target (`ik_base_link`) |
-| `LIO_robot_base_link` | Parent of `lio_link12` in full robot TF tree; **not present in the IK URDF**; 266 mm above + 90° from `LIO_base_link` | Output frame for `/commanded_pose` (`robot_base_frame_id`) |
+| `LIO_base_link` | Arm assembly mounting point on platform; root link of `lio_arm_reframed.urdf`; Pinocchio world frame | Output frame for `/commanded_pose` (`robot_base_frame_id`); IK TF lookup target (`ik_base_link`) |
+| `LIO_robot_base_link` | Parent of `lio_link12` in full robot TF tree; **not present in the IK URDF**; 266 mm above + 90° from `LIO_base_link` | TF chain intermediate only (no longer used as an output frame) |
 | `camera_color_optical_frame` | RealSense color sensor optical frame; all grasp poses are stored in this frame | TF lookup source; `gripper_frame_id` |
 
-The two base frames are **not interchangeable**: `LIO_base_link` is the Pinocchio kinematic root while `LIO_robot_base_link` is the world-anchor for published commands. The static transform between them is `t = [0, 0, 0.266] m`, `R = Rz(90°)`.
+The two base frames are **not interchangeable**: they differ by a static transform of `t = [0, 0, 0.266] m`, `R = Rz(90°)`. All published commands and the IK check now use `LIO_base_link` (`robot_base_frame_id` = `ik_base_link` = `LIO_base_link`); `LIO_robot_base_link` only appears as an intermediate link inside the full-robot TF tree.
 
 The static transform from `lio_gripper_interface_link` → `camera_link` is published by the production launch file ([grasp_pose_client.launch.py](../launch/grasp_pose_client.launch.py)) via a `StaticTransformBroadcaster`. Its rotation places the RealSense optical axis pointing forward along the robot's approach direction.
 
@@ -267,7 +269,7 @@ flowchart TD
   G --> H["POST /submit_ik_result\n{run_id, trace_id, grasps: passed[]}\ncamera-frame dicts returned unchanged"]
   H --> T
 
-  F -- execute --> I["_transform_to_base()\nTF(LIO_robot_base_link ← camera_optical)\n+ grasp_offset_base_xyz"]
+  F -- execute --> I["_transform_to_base()\nTF(LIO_base_link ← camera_optical)\n+ grasp_offset_base_xyz\n+ grasp→TCP axis remap"]
   I --> J["_publish_visualisation()\n~/best_grasp, ~/grasps\n/commanded_pose"]
   J --> T
 ```
@@ -334,7 +336,7 @@ The sync callback uses a `ReentrantCallbackGroup` so that new frames can arrive 
 | `sync_queue_size` | `10` | ApproximateTimeSynchronizer queue depth |
 | `sync_slop_s` | `0.05` | Color/depth time sync tolerance (s) |
 | `gripper_frame_id` | `camera_color_optical_frame` | TF source frame (grasps from server) |
-| `robot_base_frame_id` | `LIO_robot_base_link` | TF target frame (published poses) |
+| `robot_base_frame_id` | `LIO_base_link` | TF target frame (published poses) |
 | `tf_timeout_s` | `0.2` | TF lookup timeout (s) |
 | `grasp_offset_base_xyz` | `[0.0, 0.0, 0.0]` | Extrinsic bias correction in base frame (m) |
 | `max_snapshot_age_s` | `2.0` | Reject frames older than this (s) |

@@ -13,8 +13,9 @@ Then:
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -86,6 +87,11 @@ def generate_launch_description() -> LaunchDescription:
                         "Must match the IK URDF root (LIO_base_link) so that "
                         "Pinocchio feasibility check and execution use the same frame.",
         ),
+        DeclareLaunchArgument(
+            "log_dir",
+            default_value="~/grasp_logs",
+            description="Directory for per-run JSONL grasp session logs.",
+        ),
         # Static TF: lio_gripper_interface_link → camera_link
         # Hand-eye calibration result (RealSense externally mounted on gripper):
         #   translation: x=-0.10 m, y=0, z=+0.052 m
@@ -97,33 +103,15 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("cam_z",  default_value="0.052"),
         DeclareLaunchArgument(
             "ik_urdf_path",
-            default_value="",
-            description="URDF for Pinocchio IK feasibility check. Empty = disabled (default when using myP move_pose).",
-        ),
-        DeclareLaunchArgument(
-            "grasp_target_topic",
-            default_value="/grasp_target_pose",
-            description="Topic on which the best grasp PoseStamped is published (RViz/debug).",
-        ),
-        DeclareLaunchArgument(
-            "myp_target_topic",
-            default_value="/grasp_target_myp",
-            description="Float64MultiArray [x_mm,y_mm,z_mm,roll_deg,pitch_deg,yaw_deg] for the myP executor script.",
-        ),
-        DeclareLaunchArgument(
-            "myp_base_frame",
-            default_value="LIO_robot_base_link",
-            description="ROS frame matching the myP SDK robot base; myP targets are expressed here.",
+            default_value=PathJoinSubstitution([
+                FindPackageShare("panda_ik"), "urdfs", "lio_arm_reframed.urdf"
+            ]),
+            description="URDF for Pinocchio IK feasibility check. Set empty to disable.",
         ),
         DeclareLaunchArgument(
             "joint_states_topic",
             default_value="/ik_interface/joint_states_sim",
             description="JointState topic used to seed the Pinocchio IK solver.",
-        ),
-        DeclareLaunchArgument(
-            "log_dir",
-            default_value="~/grasp_logs",
-            description="Directory for per-run JSONL grasp session logs.",
         ),
         DeclareLaunchArgument("cam_qx", default_value="0.0"),
         DeclareLaunchArgument("cam_qy", default_value="-0.7071067811865476"),  # Ry(-90°)
@@ -172,14 +160,30 @@ def generate_launch_description() -> LaunchDescription:
             # Systematic extrinsic-bias correction (meters) added to the grasp position
             # AFTER transformation into robot_base_frame_id (= LIO_base_link).
             # Axes follow LIO_base_link: +x = arm-forward, +y = left, +z = up.
-            # Set to [0,0,0] until re-calibrated in LIO_base_link axes.
+            # 2026-06-12: reset to zero. The ~(+0.122, 0, −0.22) cmd-vs-stop mismatch
+            # this used to compensate was traced to two execution-side bugs, now fixed:
+            # (1) panda_ik URDFs placed lio_joint1 0.212 m higher than the platform's
+            #     robot_description (dz), and (2) ik_stream_to_action advanced its
+            #     stream even when move_joints goals were rejected (dx undershoot).
+            # If a small constant residual remains, recalibrate from fresh logs.
             "grasp_offset_base_xyz": [0.0, 0.0, 0.0],
+            # Tool-frame correction, expressed in the final TCP frame and rotating
+            # with the grasp orientation: +x = approach (deeper), +y = closing axis,
+            # +z = lateral. Use y to center the target between the fingers (observed
+            # bias: target lines up with the RIGHT/passive claw instead of the
+            # center) and x to tune grasp depth. Calibrate from physical trials.
+            # x = 0.1245 = lio_tcp_joint(0.189) − lio_gripper_joint(0.0645): places
+            # the FINGER PIVOT on the raw grasp point (the depth the user validated
+            # as a correct-looking grasp). Reduce x toward 0 (= fingertip center)
+            # if fingers hit the table or the palm presses into the object.
+            # Calibrated 2026-06-12 from physical trials: the raw grasp point used
+            # to line up with the RIGHT (passive) claw; verified tool-frame
+            # (rotates with the gripper) by grasping the same object at two yaws
+            # ~90° apart, then fine-tuned to y=+0.045, z=+0.004.
+            "grasp_offset_tool_xyz": [0.0945, 0.045, 0.004],
             "ik_urdf_path": LaunchConfiguration("ik_urdf_path"),
             "joint_states_topic": LaunchConfiguration("joint_states_topic"),
             "log_dir": LaunchConfiguration("log_dir"),
-            "grasp_target_topic": LaunchConfiguration("grasp_target_topic"),
-            "myp_target_topic": LaunchConfiguration("myp_target_topic"),
-            "myp_base_frame": LaunchConfiguration("myp_base_frame"),
         }],
     )
 

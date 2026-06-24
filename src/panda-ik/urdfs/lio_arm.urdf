@@ -19,8 +19,10 @@
   </link>
  
   <joint name="lio_joint1" type="revolute">
-    <origin rpy="0 0 0" xyz="0 0 0.212"/>
-    <!-- <origin xyz="0 0 0.212" rpy="0 0 0" /> -->
+    <!-- Match the platform's live robot_description: lio_joint1 sits directly at
+         LIO_robot_base_link (origin 0), so base_footprint ≡ LIO_robot_base_link.
+         The old z=0.212 made every IK solution land 21.2 cm below the reported TCP. -->
+    <origin rpy="0 0 0" xyz="0 0 0"/>
     <parent link="base_footprint"/>
     <child link="lio_link12"/>
     <limit effort="150" lower="-2.9670597283903604" upper="2.9670597283903604" velocity="1.658062789394613"/>
