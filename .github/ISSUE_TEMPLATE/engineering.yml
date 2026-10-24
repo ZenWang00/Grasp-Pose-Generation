@@ -1,0 +1,78 @@
+name: Engineering Task
+description: A bounded implementation, documentation, refactoring, or development-tooling outcome.
+labels: ["type:engineering"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read [Issue Standards](https://github.com/ZenWang00/semantic-shared-control/wiki/Issue-Standards) and [Development Workflow](https://github.com/ZenWang00/semantic-shared-control/wiki/Development-Workflow) before starting.
+
+        Create this issue in the repository that owns the deliverable. Use full URLs for cross-repository parents and dependencies; record companion revisions and integration evidence when relevant. Add ROS2 project issues explicitly to [Project #3](https://github.com/users/ZenWang00/projects/3) and verify their board fields.
+
+        One execution issue should fit one work conversation, including context, implementation, debugging, verification, and handoff. Split larger work into staged, independently verifiable sub-issues. An umbrella issue coordinates those sub-issues; it is not one oversized execution assignment.
+
+        Unknown information may be recorded explicitly while this issue is in Backlog; resolve it before Ready. Form completeness alone does not establish readiness. Delivery and Handoff is optional at creation in Backlog; specify planned artifacts before Ready, then fill in actual results, evidence, and handoff details at delivery or transfer.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: State the observable result and why it is needed. For code changes, describe the expected behavior; documentation and tooling tasks need an equally checkable outcome.
+      placeholder: "After this task, ... This enables ..."
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and Non-goals
+      description: Define the included work and what is deliberately outside this issue.
+      placeholder: "Included: ...\nExcluded: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and References
+      description: Link the relevant design, affected interface contracts, code entry points, and related issues. Persist any decisions that otherwise exist only in a conversation.
+      placeholder: "Design and interface references: ...\nRelevant code or documents: ...\nRelated issues: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: execution_slice
+    attributes:
+      label: Execution Slice
+      description: Identify the stage and component. Assess whether necessary background, code, tool output, implementation, debugging, verification, and handoff fit one work conversation with headroom. Use the actual model context capacity, not a fixed token cap. Split work before Ready if it would require repeated context compression or cover independent outcomes; link the parent and self-contained sub-issues with explicit inputs and outputs.
+      placeholder: "Stage/component: ...\nSingle-conversation fit and headroom: ...\nParent or staged sub-issues, if needed: ...\nStage inputs and outputs: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and Inputs
+      description: List prerequisite issues, data, environments, and external dependencies. Write None if there are none; do not rely on another conversation's memory.
+      placeholder: "Prerequisites and their status: ...\nRequired data/environment: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: Give observable pass/fail conditions for the result. Avoid vague terms such as improve or finish. Record the reason for later changes rather than silently lowering the standard.
+      placeholder: "- [ ] Given ..., when ..., the observable result is ..."
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification Plan
+      description: Explain how each acceptance condition will be checked, the required environment, and evidence to retain. Test behavior and relevant failure cases. Use suitable document checks for documentation; do not add tests merely to mirror the implementation or for reversible low-impact edits.
+      placeholder: "Checks and acceptance criteria covered: ...\nEnvironment and commands: ...\nEvidence to retain: ...\nSimulation, replay, or hardware, if applicable: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: delivery
+    attributes:
+      label: Delivery and Handoff
+      description: Optional at creation in Backlog; specify planned artifacts before Ready. At delivery or transfer, record the actual branch, commit/version, PR or artifact, checks and results, independent review, any required human decision, limitations, unresolved work, and next steps. If the work outgrows the context budget, save progress and link follow-up issues without declaring unfinished acceptance criteria complete.
+      placeholder: "Version and deliverables: ...\nVerification and review evidence: ...\nLimitations or blockers: ...\nRemaining work, next steps, and required files: ..."
+    validations:
+      required: false

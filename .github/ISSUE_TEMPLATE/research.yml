@@ -1,0 +1,102 @@
+name: Research Task
+description: A bounded, reproducible investigation with explicit evidence and analysis.
+labels: ["type:research"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read [Issue Standards](https://github.com/ZenWang00/semantic-shared-control/wiki/Issue-Standards) and [Development Workflow](https://github.com/ZenWang00/semantic-shared-control/wiki/Development-Workflow) before starting.
+
+        Create this issue in the repository that owns the deliverable. Use full URLs for cross-repository parents and dependencies; record companion revisions and integration evidence when relevant. Add ROS2 project issues explicitly to [Project #3](https://github.com/users/ZenWang00/projects/3) and verify their board fields.
+
+        One execution issue should fit one work conversation, including context, execution, debugging, verification, and handoff. Split larger research into staged, independently verifiable sub-issues with persistent inputs and outputs.
+
+        Unknown information may be recorded explicitly in Backlog; resolve it before Ready. Negative or inconclusive findings can complete a task when its evidence and acceptance requirements are met. Research conclusions intended for a thesis or external communication require human confirmation. Delivery and Handoff is optional at creation in Backlog; specify planned artifacts before Ready, then fill in actual results, evidence, and handoff details at delivery or transfer.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: Identify the research deliverable and the decision or understanding it should support. Do not require a positive finding as the definition of completion.
+      placeholder: "Deliverable: ...\nDecision or understanding supported: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Research Question and Study Type
+      description: State the question and any hypothesis. Declare exploratory or confirmatory work; analyses added after observing results must be identified as exploratory.
+      placeholder: "Question: ...\nHypothesis, if applicable: ...\nExploratory or confirmatory, and why: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: Data, Scenarios, and Comparisons
+      description: Identify data sources, selection rules, scenarios, controls or baselines, and comparison conditions. Explain any item that is not applicable.
+      placeholder: "Data and selection: ...\nScenarios: ...\nBaseline/control and comparison: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: analysis
+    attributes:
+      label: Metrics and Analysis Plan
+      description: Define the measures and analysis procedure before execution where applicable, including repetitions or uncertainty assessment appropriate to the question. Record justified plan changes and distinguish later exploratory analysis.
+      placeholder: "Metrics and definitions: ...\nAnalysis procedure: ...\nRepetitions and uncertainty assessment: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and Non-goals
+      description: Bound the question, experimental conditions, and claims. Identify what this study cannot establish.
+      placeholder: "Included: ...\nExcluded conditions or claims: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and References
+      description: Link the relevant design, prior experiments, methods, code entry points, and related issues. Persist decisions and findings rather than depending on conversation memory.
+      placeholder: "Design and methods: ...\nPrior results and code: ...\nRelated issues: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: execution_slice
+    attributes:
+      label: Execution Slice
+      description: Identify the research stage and component. Budget background, code, tool output, execution, debugging, analysis, verification, and handoff within one work conversation with headroom, using actual context capacity rather than a fixed token cap. Split large studies into self-contained stages with explicit inputs and outputs before Ready.
+      placeholder: "Stage/component: ...\nSingle-conversation fit and headroom: ...\nParent or staged sub-issues, if needed: ...\nStage inputs and outputs: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and Inputs
+      description: List prerequisite issues, datasets, configurations, compute or hardware, and external dependencies. Write None if there are none.
+      placeholder: "Prerequisites and their status: ...\nRequired data/configuration/environment: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: Define when the question has been investigated adequately and the deliverables are complete, including evidence, reproducibility, and limitations. A negative result is not a failed acceptance condition merely because it is negative.
+      placeholder: "- [ ] The planned evidence ...\n- [ ] The analysis and limitations ...\n- [ ] The reproducibility record ..."
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification Plan
+      description: Explain how data, execution, and analysis will be checked. Specify retained code and data versions, configuration, seeds where relevant, raw results, analysis artifacts, and rerun instructions. Distinguish simulation, replay, and real-robot evidence.
+      placeholder: "Checks and acceptance criteria covered: ...\nVersion/configuration record: ...\nResults and analysis artifacts: ...\nRerun procedure and observation mode: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: delivery
+    attributes:
+      label: Delivery and Handoff
+      description: Optional at creation in Backlog; specify planned artifacts before Ready. At delivery or transfer, link the actual versioned code, data, configuration, results, analysis, review, and required human confirmation. Record findings including negative results, deviations, limitations, unresolved work, and next steps. Save and split oversized remaining work without weakening acceptance criteria.
+      placeholder: "Versions and deliverables: ...\nFindings and verification evidence: ...\nReview and required human confirmation: ...\nDeviations and limitations: ...\nRemaining work, next steps, and required files: ..."
+    validations:
+      required: false
