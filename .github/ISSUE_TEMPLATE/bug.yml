@@ -1,0 +1,102 @@
+name: Bug Report
+description: A reproducible defect or a clearly bounded diagnostic task.
+labels: ["type:bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read [Issue Standards](https://github.com/ZenWang00/semantic-shared-control/wiki/Issue-Standards) and [Development Workflow](https://github.com/ZenWang00/semantic-shared-control/wiki/Development-Workflow) before starting.
+
+        Create this issue in the repository that owns the deliverable. Use full URLs for cross-repository parents and dependencies; record companion revisions and integration evidence when relevant. Add ROS2 project issues explicitly to [Project #3](https://github.com/users/ZenWang00/projects/3) and verify their board fields.
+
+        One execution issue should fit one work conversation, including context, implementation, debugging, verification, and handoff. Split larger investigations and fixes into staged, independently verifiable sub-issues.
+
+        Unknown information may be recorded explicitly in Backlog; resolve it before Ready. If the defect cannot yet be reproduced, keep it in Backlog or define a diagnostic task with its own verifiable outcome. Delivery and Handoff is optional at creation in Backlog; specify planned artifacts before Ready, then fill in actual results, evidence, and handoff details at delivery or transfer.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: State the observable correction or diagnostic result this issue should deliver and why it matters.
+      placeholder: "This issue will establish or correct ..."
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and Actual Behavior
+      description: Separate the expected behavior from the observed behavior, and link the contract or requirement supporting the expectation.
+      placeholder: "Expected: ...\nActual: ...\nSupporting contract: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction Steps and Evidence
+      description: Provide the smallest known reproduction, its frequency, and relevant logs or artifacts. State explicitly when reproduction is not yet established.
+      placeholder: "Steps: ...\nFrequency: ...\nLogs or artifacts: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Version and Environment
+      description: Identify the commit or release, configuration, relevant dependencies, data, and hardware. Distinguish simulation, replay, and real-robot observations.
+      placeholder: "Commit/release: ...\nConfiguration and environment: ...\nData and hardware: ...\nObservation mode: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and Non-goals
+      description: Define the defect or diagnostic boundary and exclude unrelated cleanup or redesign.
+      placeholder: "Included: ...\nExcluded: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and References
+      description: Link relevant design, interfaces, code entry points, and related issues. Persist necessary decisions outside the conversation.
+      placeholder: "Design and interfaces: ...\nRelevant code: ...\nRelated issues: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: execution_slice
+    attributes:
+      label: Execution Slice
+      description: Identify the stage and component. Budget background, code, tool output, investigation, implementation, verification, and handoff within one work conversation, with headroom and no fixed token cap. Split before Ready if repeated context compression or independent investigations are expected; make each stage independently understandable with explicit inputs and outputs.
+      placeholder: "Stage/component: ...\nSingle-conversation fit and headroom: ...\nParent or staged sub-issues, if needed: ...\nStage inputs and outputs: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and Inputs
+      description: List prerequisites, required data, access, environments, and external dependencies. Write None if there are none.
+      placeholder: "Prerequisites and their status: ...\nRequired data/environment: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: State checkable correction or diagnostic conditions, including the original reproduction where applicable. Record reasons for later changes; do not weaken criteria simply to match the result.
+      placeholder: "- [ ] With the reproduction above, ...\n- [ ] The relevant existing behavior ..."
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification Plan
+      description: Map checks to acceptance criteria and retain evidence. Add a meaningful regression check when appropriate; a diagnostic issue should specify the evidence needed to establish its conclusion.
+      placeholder: "Checks and acceptance criteria covered: ...\nEnvironment and commands: ...\nEvidence to retain: ...\nSimulation, replay, or hardware: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: delivery
+    attributes:
+      label: Delivery and Handoff
+      description: Optional at creation in Backlog; specify planned artifacts before Ready. At delivery or transfer, record the actual branch, commit/version, PR or diagnostic artifact, results, review and required human decisions, limitations, unresolved work, and next steps. If the issue outgrows the context budget, save progress and split remaining work without marking unfinished criteria complete.
+      placeholder: "Version and deliverables: ...\nVerification and review evidence: ...\nLimitations or blockers: ...\nRemaining work, next steps, and required files: ..."
+    validations:
+      required: false

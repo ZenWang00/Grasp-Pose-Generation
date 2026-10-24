@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Issue Standards
+    url: https://github.com/ZenWang00/semantic-shared-control/wiki/Issue-Standards
+    about: Read the required task structure, context budget, and Ready and Done criteria.
+  - name: Development Workflow
+    url: https://github.com/ZenWang00/semantic-shared-control/wiki/Development-Workflow
+    about: Read development, independent review, human decision, and handoff rules.
+  - name: Repository Ownership and Project
+    url: https://github.com/ZenWang00/semantic-shared-control/wiki/Repository-Ownership-and-Cross-Repository-Workflow
+    about: Choose the implementation repository and use the shared Project and Wiki.
