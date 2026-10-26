@@ -9,12 +9,12 @@ import time
 from uuid import uuid4
 
 from ssc_core import (AppliedCommandReference, HostCheckerSpec, NUMERIC_OFFLINE_V1,
-                      SupervisedOptimizer, estimate_intent, get_intent_config,
+                      SupervisedOptimizer, estimate_intent, get_intent_config, get_solver_config,
                       parse_message, parse_record, to_dict)
 from .gate import CommandGate
 from .lifecycle import LifecycleCoordinator, LifecycleState as S, SessionRuntime
 from .plant import ControllerError, PLANT_TICK_NS, SyntheticController
-from .scenarios import Fixture, MAPPING
+from .scenarios import Fixture, MAPPING, SOLVER_ID
 from .snapshots import SnapshotCoordinator
 
 
@@ -32,9 +32,9 @@ class SimulationClock:
 
 
 class OfflineLoop:
-    def __init__(self, variant="default", *, session_id=None, initial_joints=(0.,) * 6):
+    def __init__(self, variant="default", *, session_id=None, initial_joints=(0.,) * 6, program_count=None):
         self.clock = SimulationClock()
-        self.fixture = Fixture(variant)
+        self.fixture = Fixture(variant, program_count=program_count)
         self.session_id = session_id or "session-integration-" + uuid4().hex
         self.intent_config = get_intent_config(self.fixture.intent_id)
         self.optimizer = None
@@ -125,7 +125,8 @@ class OfflineLoop:
         if self.pending is not None and not self.pending[0].done():
             raise RuntimeError("previous worker is still retiring")
         if self.optimizer is None:
-            self.optimizer = SupervisedOptimizer(HostCheckerSpec("ssc_runtime.constraints:SyntheticHostChecker"))
+            self.optimizer = SupervisedOptimizer(HostCheckerSpec("ssc_runtime.constraints:SyntheticHostChecker"),
+                                                 solver_config=get_solver_config(SOLVER_ID))
         bundle = self.store.acquire()
         if bundle is None:
             raise RuntimeError("no activated bundle")

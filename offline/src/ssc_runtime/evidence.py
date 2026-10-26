@@ -13,7 +13,7 @@ from zipfile import ZipFile
 
 from ssc_core import EVALUATOR_LIMITS, NUMERIC_OFFLINE_V1, get_solver_config, to_dict
 from ssc_core.archive import ArchiveBuilder, environment
-from .scenarios import CORE_REVISION, MAPPING
+from .scenarios import CORE_REVISION, MAPPING, SOLVER_ID, PROFILE_ID
 
 
 def json_bytes(value):
@@ -40,7 +40,7 @@ def wheel_identity(path, distribution, revision):
 
 
 def installation(core_wheel, runtime_wheel, runtime_revision):
-    if metadata.version("ssc-core") != "0.9.0" or metadata.version("ssc-runtime") != "0.6.0":
+    if metadata.version("ssc-core") != "0.10.0" or metadata.version("ssc-runtime") != "0.7.0":
         raise ValueError("unsupported installed version pair")
     return {"server": wheel_identity(core_wheel, "ssc-core", CORE_REVISION),
             "ros2": wheel_identity(runtime_wheel, "ssc-runtime", runtime_revision)}
@@ -50,9 +50,9 @@ def export_run(loop, path, software):
     loop.capture()
     manifest = {"run_id": "offline-loop-" + loop.fixture.variant, "session_id": loop.session_id,
         "schema_version": "1.0", "function_api_version": "geometry-residual-v1",
-        "profile_id": "offline-reference-v1", "evaluator_policy_id": "numeric-offline-v1",
-        "solver_config_id": "solver-slsqp-v1", "installation_id": "integration-installation-v1",
-        "scenario_id": "integration-scenario-v1", "environment": environment(), "software": software,
+        "profile_id": PROFILE_ID, "evaluator_policy_id": "numeric-offline-v1",
+        "solver_config_id": SOLVER_ID, "installation_id": "integration-installation-batch-v2",
+        "scenario_id": "integration-scenario-batch-v2", "environment": environment(), "software": software,
         "evidence_scope": "Offline software integration with real bounded solver/evaluator processes and synthetic plant feedback. "
                           "Simulation time uses explicit 20 ms ticks; wall-clock computation budgets are independently enforced. "
                           "No hardware, capture-time transform, physical stopping or research-benefit claim.",
@@ -73,8 +73,10 @@ def export_run(loop, path, software):
     profile = files("ssc_runtime").joinpath("data/offline-reference-v1.md").read_bytes()
     for identifier in ("offline-reference-v1", "synthetic-rotary-v1", "synthetic-host-v1"):
         builder.add_resource(identifier, profile, media_type="text/markdown; charset=utf-8")
+    batch_profile = files("ssc_runtime").joinpath("data/offline-reference-batch-v2.md").read_bytes()
+    builder.add_resource(PROFILE_ID, batch_profile, media_type="text/markdown; charset=utf-8")
     resource("numeric-offline-v1", {"validation": asdict(NUMERIC_OFFLINE_V1), "execution": asdict(EVALUATOR_LIMITS)})
-    resource("solver-slsqp-v1", asdict(get_solver_config()))
+    resource(SOLVER_ID, asdict(get_solver_config(SOLVER_ID)))
     resource(loop.intent_config.estimator_config_id, asdict(loop.intent_config))
     resource(MAPPING, {"axes": "synthetic_base XY", "dead_zone": 0, "source": "normalized synthetic input events"})
     observation = loop.fixture.records["SceneObservation"]
@@ -82,11 +84,13 @@ def export_run(loop, path, software):
         "K": observation["K"], "projection_model": observation["projection_model"], "transform": observation["T_control_camera"]})
     for identifier, (content, media) in loop.fixture.assets.items():
         builder.add_resource(identifier, content, media_type=media)
-    resource("integration-installation-v1", {"software": software,
+    resource("integration-installation-batch-v2", {"software": software,
         "freeze": subprocess.check_output([sys.executable, "-m", "pip", "freeze"], text=True),
         "command": "Install the retained pinned wheels; python -I -m ssc_runtime.runner (see CLI arguments).",
-        "profile_source_revision": CORE_REVISION, "profile_sha256": sha256(profile).hexdigest()})
-    resource("integration-scenario-v1", {"fixture": loop.fixture.variant, "fixture_records": loop.fixture.records,
+        "profile_source_revision": CORE_REVISION, "base_profile_sha256": sha256(profile).hexdigest(),
+        "profile_sha256": sha256(batch_profile).hexdigest(), "solver_config_id": SOLVER_ID})
+    resource("integration-scenario-batch-v2", {"fixture": loop.fixture.variant, "fixture_records": loop.fixture.records,
+        "program_count": len(loop.fixture.programs), "binding_weights": loop.fixture.binding_weights,
         "tick_ns": 20_000_000, "provenance": loop.plant.provenance,
         "input_messages": [to_dict(m) for m in loop.messages.values() if m.message_type == "JoystickSample"]})
     resource("snapshot-runtime-evidence-v1", {d.inputs.snapshot.snapshot_id: asdict(d) for d in loop.dispatches})

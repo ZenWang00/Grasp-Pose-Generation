@@ -287,13 +287,14 @@ def test_context_reinitialization_and_explicit_fault_rearm(loop):
     move(loop.cycle())
 
 
-def test_real_run_archive_and_fresh_process_replay(tmp_path, make_loop):
+@pytest.mark.parametrize("program_count", [None, 16])
+def test_real_run_archive_and_fresh_process_replay(tmp_path, make_loop, program_count):
     # Test-only installation identifiers; CLI acceptance separately checks real
     # wheel bytes/SHAs and records both exact revisions in its manifest.
     software = {"server": {"revision": CORE_REVISION, "package_version": environment()["packages"]["ssc-core"],
                            "wheel_sha256": "0" * 64},
-                "ros2": {"revision": "0" * 40, "package_version": "0.6.0", "wheel_sha256": "0" * 64}}
-    with make_loop() as loop:
+                "ros2": {"revision": "0" * 40, "package_version": "0.7.0", "wheel_sha256": "0" * 64}}
+    with make_loop(program_count=program_count) as loop:
         run_normal(loop)
         loop.close()
         evidence = export_run(loop, tmp_path / "run.json", software)
@@ -302,10 +303,13 @@ def test_real_run_archive_and_fresh_process_replay(tmp_path, make_loop):
     assert evidence["payload_sha256"] == envelope["sha256"]
     assert evidence["payload_sha256"] != evidence["sha256"]
     assert evidence["accepted_moves"] == 3
+    assert envelope["payload"]["manifest"]["solver_config_id"] == "solver-slsqp-batch-v2"
+    assert len({pid for _, pid in loop.preparations[0]["evaluator_pids"]}) == 1
     replay = subprocess.run([sys.executable, "-I", "-m", "ssc_core.replay", evidence["path"],
                              "--sha256", evidence["sha256"]], capture_output=True, text=True, timeout=60)
     (tmp_path / "integration-replay.json").write_text(replay.stdout)
     assert replay.returncode == 0, replay.stdout + replay.stderr
+    assert json.loads(replay.stdout)["evaluation_count"] == 3 * (program_count or 2)
     assert loaded.registry().resolve_snapshot(loop.dispatches[-1].inputs.snapshot.snapshot_id)
 
 

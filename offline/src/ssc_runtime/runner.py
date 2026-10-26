@@ -42,14 +42,17 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True, help="New directory; never overwrite existing evidence")
     parser.add_argument("--variant", choices=VARIANTS, default="default")
     parser.add_argument("--cycles", type=int, default=3)
+    parser.add_argument("--program-count", type=int, help="Replicated default relations, 2-16; preserves per-object weight")
     args = parser.parse_args(argv)
     if sys.platform != "linux":
         parser.error("bounded numerical execution requires Linux")
     if not 2 <= args.cycles <= 20:
         parser.error("cycles must be between 2 and 20")
+    if args.program_count is not None and (args.variant != "default" or not 2 <= args.program_count <= 16):
+        parser.error("program-count requires the default variant and a count in 2-16")
     software = installation(args.core_wheel, args.runtime_wheel, args.runtime_revision)
     args.output.mkdir(parents=True, exist_ok=False)
-    with OfflineLoop(args.variant) as loop:
+    with OfflineLoop(args.variant, program_count=args.program_count) as loop:
         try:
             run_normal(loop, args.cycles)
         except Exception as exc:
