@@ -13,7 +13,8 @@ CORE_REVISION = "9ce2d2467f10ca6d82e7672a3158aa6f584ebfde"
 MAPPING = "integration-xy-v1"
 # A real one-pixel PNG and float32 zero depth. Metadata only, never perception.
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC")
-VARIANTS = ("default", "joystick-only", "positive-approach", "within-tolerance", "computation-error")
+VARIANTS = ("default", "joystick-only", "positive-approach", "within-tolerance",
+            "computation-error", "workspace-face", "excluded-sphere")
 
 
 class Fixture:
@@ -42,7 +43,7 @@ class Fixture:
         if variant == "joystick-only":
             config["config_id"] = "config-offline-alpha0-v1"
         self.intent_id = "intent-linear-alpha0-v1" if variant == "joystick-only" else "intent-linear-v1"
-        if variant in ("positive-approach", "within-tolerance", "computation-error"):
+        if variant in ("positive-approach", "within-tolerance", "computation-error", "workspace-face", "excluded-sphere"):
             self.programs = self.programs[:1]
             geometry["objects"] = geometry["objects"][:1]
             geometry["keypoints"] = geometry["keypoints"][:1]
@@ -50,6 +51,8 @@ class Fixture:
         if variant in ("positive-approach", "within-tolerance"):
             geometry["keypoints"][0]["position_xyz"] = [.42, 0., .3]
             self.programs[0]["parameters"][0]["value"] = .01 if variant == "positive-approach" else .03
+        if variant in ("workspace-face", "excluded-sphere"):
+            geometry["keypoints"][0]["position_xyz"] = ([.51, 0., .3] if variant == "workspace-face" else [.45, .07, .3])
         if variant == "computation-error":
             program = self.programs[0]
             program.update(source_code="def evaluate(p_tcp, R_control_tcp, keypoints, axis_dirs, params):\n    return params[0] / (p_tcp[0] - params[1])\n",

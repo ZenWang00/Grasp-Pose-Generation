@@ -109,7 +109,7 @@ wheels/checksums, dependencies and exact revisions.
 | Evidence | Coverage |
 | --- | --- |
 | Integration normal/golden/reversal tests | Alpha zero, positive residual move, within-tolerance zero penalty, immediate current-direction support, accepted smoothing history, independent plant lag |
-| Integration fault tests | Release, re-engagement, expired/duplicate/old/forged results, stale sources, host rejection, runtime division error, real SIGSTOP worker stall, context reinitialization and explicit fault rearm |
+| Integration fault tests | Release, re-engagement, expired/duplicate/old/forged results, stale sources, host rejection, generated targets beyond the workspace/inside the excluded sphere, runtime division error, real SIGSTOP worker stall, context reinitialization and explicit fault rearm |
 | Existing runtime tests | Foreign source clocks, old sessions, exact stale-age boundaries, atomic bundle replacement, host constraints, missing feedback stop, controller submission failure |
 | Existing producer tests | Structure/numerics, graph identity, forbidden source, units, receipts, interpreter faults, isolation, infeasible solver holds and immutable archive corruption |
 | CLI archive and fresh-process replay | Installed pair, full immutable graph/resources, accepted commands versus proposals, raw residual/penalty reproduction at atol=rtol=1e-9 |

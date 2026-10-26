@@ -40,7 +40,7 @@ ROWS = {
     "C05": [("runtime", "test_worker_stall_times_out_without_renewing_target"), ("runtime", "test_lost_upstream_progress_liveness_watchdog_and_discards_do_not_refresh")],
     "C06": [("runtime", "test_stale_or_invalid_feedback_selects_stop"), ("runtime", "test_cancel_hold_stop_prevent_later_advancement_without_copying_pose")],
     "C07": [("runtime", "test_release_inflight_and_ordinary_reengagement"), ("runtime", "test_context_reinitialization_and_explicit_fault_rearm")],
-    "C08": [("runtime", "test_host_rejection_never_applies_proposal"), ("runtime", "test_entire_segment_not_only_endpoints")],
+    "C08": [("runtime", "test_soft_relation_cannot_relax_real_host_limits"), ("runtime", "test_host_rejection_never_applies_proposal"), ("runtime", "test_entire_segment_not_only_endpoints")],
 }
 
 

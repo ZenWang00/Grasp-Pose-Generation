@@ -122,7 +122,7 @@ def test_profile_golden_movement(variant, dx, raw, penalty, make_loop, tmp_path)
             "variant": variant, "expected": {"dx_m": dx, "raw_g": raw, "penalty": penalty},
             "actual": {"dx_m": result.payload.next_tcp_pose.position_xyz[0] - .4,
                 "evaluations": [to_dict(v) for v in result.payload.constraint_evaluations]},
-            "position_atol_m": 1e-6, "penalty_atol": 1e-5, "passed": True}, indent=2))
+            "position_atol_m": 1e-6, "penalty_atol": 1e-5, "numerical_oracle_passed": True}, indent=2))
         # A target is a request, not a measurement at that target.
         assert loop.plant.sample().payload.tcp_pose != result.payload.next_tcp_pose
 
@@ -324,3 +324,22 @@ def test_new_loop_has_fresh_session_and_rejects_prior_session_work(make_loop):
         decision = current.lifecycle.submit_result(old[0], weights=old[1])
         assert decision.disposition == "discarded" and not decision.actions
         assert current.plant.target is target
+
+
+@pytest.mark.parametrize("variant,start,max_x", [
+    ("workspace-face", (.499, 0., .3), .5),
+    ("excluded-sphere", (.42, .07, .3), .4299),
+])
+def test_soft_relation_cannot_relax_real_host_limits(make_loop, variant, start, max_x):
+    with make_loop(variant, initial_joints=proxy_inverse(Pose(start, (0., 0., 0., 1.)))) as loop:
+        loop.initialize()
+        result, _, decision, _ = move(loop.cycle())
+        target = result.payload.next_tcp_pose.position_xyz
+        assert start[0] < target[0] <= max_x + 2e-9
+        assert result.payload.evaluation_valid and not result.payload.constraints_satisfied
+        assert result.payload.constraint_evaluations[0].raw_g > 0
+        assert loop.solves[-1].host_margins
+        assert min(margin for _, margin in loop.solves[-1].host_margins) >= -1e-8
+        loop.step(u=(1., 0.))
+        actual = loop.plant.sample().payload.tcp_pose.position_xyz
+        assert start[0] < actual[0] <= target[0] + 2e-9
