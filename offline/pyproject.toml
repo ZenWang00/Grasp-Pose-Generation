@@ -9,7 +9,7 @@ description = "Robot-owned offline shared-control coordination"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-  "ssc-core @ git+https://github.com/ZenWang00/semantic-shared-control.git@22bd807c9f9b4fc5a584fe363fe14e80e2aa7352",
+  "ssc-core @ git+https://github.com/ZenWang00/semantic-shared-control.git@4dbf12bcab2d7577fd9e477ab28171b7336bd406",
 ]
 
 [project.optional-dependencies]

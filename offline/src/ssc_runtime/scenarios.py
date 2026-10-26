@@ -11,7 +11,7 @@ from ssc_core import (GeometryRef, HostBindingPolicy, HostNormalization, Program
                       TaskRef, UnitReview, feature_definition_digest, program_content_digest)
 from .activation import ActivationRequest, ActiveBundleStore
 
-CORE_REVISION = "22bd807c9f9b4fc5a584fe363fe14e80e2aa7352"
+CORE_REVISION = "4dbf12bcab2d7577fd9e477ab28171b7336bd406"
 SOLVER_ID = "solver-slsqp-batch-v2"
 PROFILE_ID = "offline-reference-batch-v2"
 MAPPING = "integration-xy-v1"

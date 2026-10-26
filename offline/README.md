@@ -10,7 +10,7 @@ a deterministic synthetic controller/feedback plant for
 [issue #4](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/4) and
 [issue #5](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/5).
 It imports no ROS, drivers, GPU libraries or online services. Installation uses
-the exact accepted server revision `22bd807c9f9b4fc5a584fe363fe14e80e2aa7352`
+the exact accepted server revision `4dbf12bcab2d7577fd9e477ab28171b7336bd406`
 (`ssc-core==0.10.0`, schema 1.0, geometry-residual-v1). It also provides the complete [offline loop runner](../docs/offline-loop.md)
 with asynchronous fusion/optimization, local control, immutable archival and fresh-process replay.
 

@@ -43,8 +43,10 @@ validated/compiled restricted programs. Generated source never executes in
 the host or SciPy solver process. Both processes disable core dumps and retain
 the existing BLAS thread limits and 1 MiB bounded JSON IPC ceiling.
 
-For each candidate pose, the solver submits the complete ordered program set,
-resolved keypoints/axes/parameters and that pose in one request. The evaluator
+For the first candidate of each solve, the solver submits the complete ordered
+program set, resolved keypoints/axes/parameters and that pose in one request.
+Subsequent candidates send the pose and the same unique solve-request identity,
+referencing only that solve's validated immutable inputs. The evaluator
 checks exact program identities/order and each input shape/domain, then
 evaluates every program. A successful reply contains exactly one finite scalar
 per program, in the same order. A malformed/missing/reordered reply or any
@@ -53,10 +55,10 @@ enter the objective or a move proposal. Programs are evaluated even at zero
 assistance. Final residuals are recomputed from the emitted target.
 
 The common pose is checked once per batch using the scalar interpreter's exact
-conversion and rotation checks. The evaluator may retain only the latest set
-of validated immutable binding inputs, keyed by exact JSON bytes (including
-program identities/order). Any changed binding content is fully checked again;
-Boolean values cannot alias numeric inputs. Every program expression still runs
+conversion and rotation checks. The evaluator retains only the latest solve's
+validated immutable binding inputs. Missing or mismatched solve references fail;
+each new solve supplies and validates its full bindings again. Boolean values
+cannot alias numeric inputs. Every program expression still runs
 for every candidate batch, including the final emitted-target recomputation.
 Inside the already supervised solver process, serial batch exchanges run
 inline with the same deadline/cancellation/retirement machinery. They do not
