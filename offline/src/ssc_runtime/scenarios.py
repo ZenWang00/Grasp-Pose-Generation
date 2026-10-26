@@ -103,7 +103,7 @@ class Fixture:
                 self.validation.append(report)
                 if report.receipt.status != "accepted":
                     raise RuntimeError(f"fixture validation failed: {report.receipt.diagnostics}")
-                binding = validator.create_binding("host-" + p["program_id"], receipt_id=report.receipt.receipt_id,
+                binding = validator.create_binding("host-batch-v2-" + p["program_id"], receipt_id=report.receipt.receipt_id,
                     geometry_ref=GeometryRef(geometry["geometry_id"], geometry["revision"]), config_id=config["config_id"])
                 self.registered.extend((("ProgramValidationReceipt", report.receipt), ("ProgramExecutionBinding", binding)))
                 bindings.append(binding.binding_id)
