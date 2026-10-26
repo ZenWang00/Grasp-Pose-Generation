@@ -1,16 +1,18 @@
 # Offline coordination package
 
-`ssc-runtime==0.4.0` implements the robot-owned atomic ActiveBundle store,
+`ssc-runtime==0.5.0` implements the robot-owned atomic ActiveBundle store,
 immutable snapshot/local dispatch coordination, local command acceptance, and
-the coordinator lifecycle with local withdrawal, watchdogs and recovery for
+the coordinator lifecycle with local withdrawal, watchdogs and recovery, and
+a deterministic synthetic controller/feedback plant for
 [issue #1](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/1),
 [issue #2](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/2),
-[issue #3](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/3) and
-[issue #4](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/4).
+[issue #3](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/3),
+[issue #4](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/4) and
+[issue #5](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/5).
 It imports no ROS, drivers, GPU libraries or online services. Installation uses
 the exact accepted server revision `95d618f567f5f057a1b3f1737cc394a105fa9a4e`
 (`ssc-core==0.6.0`, schema 1.0, geometry-residual-v1). It does not implement the
-controller/plant or the full offline loop runner.
+full offline loop runner.
 
 From the repository root, with Python 3.12:
 
@@ -35,3 +37,6 @@ See [command acceptance and synthetic constraints](../docs/command-gate.md)
 for the trusted action boundary, ordering, independent live checks and evidence.
 See [lifecycle, withdrawal and watchdogs](../docs/lifecycle.md) for engagement,
 event-specific recovery, FAULT rearm, session/clock restarts and adapter handoff.
+
+See [the synthetic controller and feedback plant](../docs/synthetic-plant.md)
+for explicit clock steps, simulation provenance, failure injection and runner wiring.

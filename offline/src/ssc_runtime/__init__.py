@@ -10,12 +10,15 @@ from .snapshots import (
 )
 from .constraints import SyntheticHostChecker, basic_step_constraints, proxy_forward, proxy_inverse
 from .gate import AcceptedTarget, CommandAdapter, CommandGate, GateDecision
+from .plant import (ControllerError, ControllerStatus, PLANT_TICK_NS, PlantEvent,
+                    SyntheticController)
 from .lifecycle import (
     LifecycleCoordinator, LifecycleError, LifecycleRecord, LifecycleState,
     SessionRuntime, WorkerCanceller,
 )
 
 __all__ = [
+    "ControllerError", "ControllerStatus", "PLANT_TICK_NS", "PlantEvent", "SyntheticController",
     "LifecycleCoordinator", "LifecycleError", "LifecycleRecord", "LifecycleState",
     "SessionRuntime", "WorkerCanceller",
     "ActivationOutcome", "ActivationRequest", "ActiveBundle", "ActiveBundleStore",
