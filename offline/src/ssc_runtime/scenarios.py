@@ -11,7 +11,7 @@ from ssc_core import (GeometryRef, HostBindingPolicy, HostNormalization, Program
                       TaskRef, UnitReview, feature_definition_digest, program_content_digest)
 from .activation import ActivationRequest, ActiveBundleStore
 
-CORE_REVISION = "0d92d78e7340af363e9ed0e3069a820a4ac6e8e8"
+CORE_REVISION = "22bd807c9f9b4fc5a584fe363fe14e80e2aa7352"
 SOLVER_ID = "solver-slsqp-batch-v2"
 PROFILE_ID = "offline-reference-batch-v2"
 MAPPING = "integration-xy-v1"
@@ -47,7 +47,7 @@ class Fixture:
                        "integration-depth-v1": (bytes(4), "application/octet-stream")}
         if variant == "joystick-only":
             config["config_id"] = "config-offline-batch-alpha0-v2"
-        self.intent_id = "intent-linear-alpha0-v1" if variant == "joystick-only" else "intent-linear-v1"
+        self.intent_id = "intent-linear-batch-alpha0-v2" if variant == "joystick-only" else "intent-linear-batch-v2"
         if variant in ("positive-approach", "within-tolerance", "computation-error", "workspace-face", "excluded-sphere"):
             self.programs = self.programs[:1]
             geometry["objects"] = geometry["objects"][:1]

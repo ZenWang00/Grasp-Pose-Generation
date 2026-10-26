@@ -20,11 +20,13 @@ record is [Issue #30](https://github.com/ZenWang00/semantic-shared-control/issue
 | `offline-reference-batch-v2` | Original v1 profile plus the explicit changes on this page |
 | `solver-slsqp-batch-v2` | Unchanged SLSQP numerics/limits; one isolated evaluator process for a complete candidate batch |
 | `config-offline-batch-v2` | Original session values, paired with this profile and batch solver |
-| `config-offline-batch-alpha0-v2` | The same session values with `intent-linear-alpha0-v1` |
+| `config-offline-batch-alpha0-v2` | The same session values with zero assistance |
+| `intent-linear-batch-v2` | Original `intent-linear-v1` values, bound to `config-offline-batch-v2` |
+| `intent-linear-batch-alpha0-v2` | Original `intent-linear-alpha0-v1` values, bound to `config-offline-batch-alpha0-v2` |
 
 The session record has its new configuration ID; no wire field is added.
 The host installation and run manifest explicitly select the solver ID.
-`numeric-offline-v1`, `geometry-residual-v1`, schema 1.0, estimator identities,
+`numeric-offline-v1`, `geometry-residual-v1`, schema 1.0,
 `synthetic-host-v1` and `synthetic-rotary-v1` remain unchanged. A changed binding
 uses the new configuration ID and its own immutable identity. Existing
 `solver-slsqp-v1` content, default lookup and old archives remain supported.
@@ -56,6 +58,10 @@ of validated immutable binding inputs, keyed by exact JSON bytes (including
 program identities/order). Any changed binding content is fully checked again;
 Boolean values cannot alias numeric inputs. Every program expression still runs
 for every candidate batch, including the final emitted-target recomputation.
+Inside the already supervised solver process, serial batch exchanges run
+inline with the same deadline/cancellation/retirement machinery. They do not
+create an extra supervisor thread per candidate. Host-facing operations remain
+asynchronous, and generated programs still execute only in the child evaluator.
 
 **The complete batch has a 10 ms real-monotonic deadline**, including host
 serialization, all program evaluations and reply publication. It is further
