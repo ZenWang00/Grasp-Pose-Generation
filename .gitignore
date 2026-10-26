@@ -12,6 +12,7 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
+.venv-offline/
 
 *.bag
 *.mcap
