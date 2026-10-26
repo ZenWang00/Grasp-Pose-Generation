@@ -7,6 +7,7 @@ on:
     paths:
       - 'offline/**'
       - 'docs/active-bundle.md'
+      - 'docs/snapshots.md'
       - '.github/workflows/offline-runtime.yml'
 
 permissions:
@@ -31,7 +32,7 @@ jobs:
           python -m pip wheel --no-deps --wheel-dir dist ./offline
           python -m venv .venv-offline
           .venv-offline/bin/python -m pip install 'dist/ssc_core-0.6.0-py3-none-any.whl[test]'
-          .venv-offline/bin/python -m pip install --no-deps dist/ssc_runtime-0.1.0-py3-none-any.whl
+          .venv-offline/bin/python -m pip install --no-deps dist/ssc_runtime-0.2.0-py3-none-any.whl
       - name: Test installed consumer and real producer receipts
         run: |
           .venv-offline/bin/python -m pytest offline/tests --basetemp=test-evidence --junitxml=test-results.xml
@@ -41,7 +42,7 @@ jobs:
           git -C shared-core rev-parse HEAD > core-revision.txt
           sha256sum dist/*.whl > wheel-sha256.txt
           cmp offline/tests/fixtures/bottle_cup_offline_v1.json shared-core/tests/fixtures/shared_control/bottle_cup_offline_v1.json
-      - name: Retain version pair and activation evidence
+      - name: Retain version pair and coordination evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -50,6 +51,7 @@ jobs:
             dist/*.whl
             test-results.xml
             test-evidence/**/concurrency-trace.json
+            test-evidence/**/snapshot-trace.json
             dependencies.txt
             runtime-revision.txt
             core-revision.txt
