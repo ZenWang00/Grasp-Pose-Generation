@@ -7,7 +7,7 @@ go through artifacts(). Generated data cannot supply initialization tokens.
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from threading import Lock, RLock
+from threading import RLock
 from typing import Literal
 from uuid import uuid4
 
@@ -121,7 +121,7 @@ class ActiveBundleStore:
                                                binding_policies=binding_policies)
         self._compatibility = compatibility
         self._artifact_lock = RLock()
-        self._state_lock = Lock()
+        self._state_lock = RLock()
         self._attempt: InitializationAttempt | None = None
         self._preparing: InitializationAttempt | None = None
         self._prepared: ActivationOutcome | None = None
@@ -160,6 +160,16 @@ class ActiveBundleStore:
     def is_current(self, bundle: ActiveBundle) -> bool:
         with self._state_lock:
             return bundle is not None and bundle is self._active
+
+    @contextmanager
+    def command_context(self):
+        """Internal gate lease. Acquire coordinator before this; no artifacts.
+
+        Only short local checks/submissions belong here. Adapter callbacks must
+        not reenter the runtime. Numerical preparation never runs in this guard.
+        """
+        with self._state_lock:
+            yield self._active
 
     def invalidate(self, reason: str) -> ActivationOutcome:
         _text(reason, "reason")

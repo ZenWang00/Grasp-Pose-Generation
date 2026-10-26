@@ -6,6 +6,7 @@ is inferred. The future gate owns acceptance and physical application.
 """
 
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from threading import RLock
@@ -154,6 +155,18 @@ class SnapshotCoordinator:
     def control_epoch(self):
         with self._lock:
             return self._epoch
+
+    @contextmanager
+    def command_transaction(self):
+        """Serialize gate decisions with inputs, epoch and context mutation.
+
+        Lock order is coordinator -> context. Registry work must finish before
+        entering this guard. No artifact/worker wait or reentrant adapter call
+        is allowed inside. This fences direct input, epoch and bundle changes.
+        """
+        with self._lock:
+            with self._store.command_context() as bundle:
+                yield bundle
 
     def set_control_epoch(self, epoch: int):
         """Mirror a lifecycle-owned cancellation; does not implement hold/stop."""
@@ -363,6 +376,15 @@ class SnapshotCoordinator:
         Call only after the future gate has independently accepted/applied it.
         A rejected or merely solved proposal cannot become smoothing history.
         """
+        return self._record_acceptance(data, acceptance, register_result=True)
+
+    def _record_acceptance(self, data, acceptance, *, register_result):
+        """Gate commit avoids artifact locking inside the atomic action guard.
+
+        Worker results were preflighted in the registry. Local holds live in
+        accepted history and the gate decision log; neither requires a registry
+        lookup. The public legacy port retains its registration behavior.
+        """
         with self._lock:
             message = self._message(data)
             _require(message.message_type == "ControlResult", "result_type", "expected ControlResult")
@@ -397,8 +419,9 @@ class SnapshotCoordinator:
                 _require(result.status == "hold" and allocation is not None and
                          allocation[0] == self._epoch and allocation[1] <= checked,
                          "unknown_local_command", "local hold must use a reserved host sequence")
-            with self._store.artifacts() as (registry, _):
-                registry.register_message(message)
+            if register_result:
+                with self._store.artifacts() as (registry, _):
+                    registry.register_message(message)
             entry = AcceptedCommand(message, record, source)
             self._accepted[record.applied_command_id] = entry
             self._previous = entry
