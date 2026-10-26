@@ -12,7 +12,7 @@ from .activation import ActivationRequest, ActiveBundleStore
 CORE_REVISION = "9ce2d2467f10ca6d82e7672a3158aa6f584ebfde"
 MAPPING = "integration-xy-v1"
 # A real one-pixel PNG and float32 zero depth. Metadata only, never perception.
-PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC")
 VARIANTS = ("default", "joystick-only", "positive-approach", "within-tolerance", "computation-error")
 
 

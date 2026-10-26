@@ -6,6 +6,7 @@ from importlib import metadata
 from importlib.resources import files
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 from zipfile import ZipFile
@@ -21,6 +22,8 @@ def json_bytes(value):
 
 def wheel_identity(path, distribution, revision):
     """Check supplied wheel against installed package bytes before labelling evidence."""
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("source revision must be a full lowercase Git commit SHA")
     path = Path(path)
     dist = metadata.distribution(distribution)
     namespace = distribution.replace("-", "_")
