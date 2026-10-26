@@ -94,7 +94,8 @@ applied ID. The gate also records a distinct trusted local hold with a newly
 allocated host sequence, null snapshot/weights and its own acceptance record.
 Thus a rejected proposal never becomes the smoothing reference. `local_hold(reason)`
 provides the same immediate trusted path to the lifecycle owner, independently
-of worker completion or joystick freshness. Local holds do not renew worker
+of worker completion or joystick freshness. `local_stop(reason)` (0.4.0) is the
+lifecycle's fault path: cancel then stop, always requesting FAULT. Local holds do not renew worker
 liveness. Eligible accepted worker moves/holds update `last_eligible_result_ns`;
 the engagement/watchdog timer itself belongs to issue #4.
 
@@ -127,9 +128,11 @@ accepted history; a hold is never skipped to revive an older movement.
 
 The caller's event loop must process release/disable/invalidation before a
 same-tick result, then enforce target expiry/watchdogs per the reference profile.
-Locks establish serialization, not operating-system timing guarantees. Lifecycle
-issue #4 owns immediate event withdrawal and recovery; plant issue #5 owns target
-expiry, independent simulated measurements and actual adapter implementation.
+Locks establish serialization, not operating-system timing guarantees.
+[LifecycleCoordinator](lifecycle.md) (issue #4) owns immediate event withdrawal,
+watchdogs and recovery and is the only caller of `set_authority`, `local_hold`
+and `local_stop`; plant issue #5 owns target expiry, independent simulated
+measurements and actual adapter implementation.
 
 ## Verification
 

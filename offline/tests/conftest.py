@@ -20,7 +20,7 @@ def catalog():
 
 @pytest.fixture
 def build(catalog, monkeypatch):
-    def make(*, stub=True, change=None, issue=True):
+    def make(*, stub=True, change=None, issue=True, session_id="session-offline-v1"):
         data = deepcopy(catalog)
         records = {m["message_type"]: m["payload"] for m in data["messages"]}
         if change:
@@ -40,7 +40,7 @@ def build(catalog, monkeypatch):
             for p in programs)
         policies = tuple(HostBindingPolicy(config["config_id"], p["program_id"],
                                           HostNormalization("m", .01)) for p in programs)
-        store = ActiveBundleStore("session-offline-v1", unit_reviews=reviews, binding_policies=policies)
+        store = ActiveBundleStore(session_id, unit_reviews=reviews, binding_policies=policies)
         reports, bindings = [], []
         with store.artifacts() as (registry, validator):
             for name in ("SessionConfig", "TaskContext", "SceneObservation", "SceneGeometry", "SemanticContext"):
