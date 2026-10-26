@@ -4,7 +4,7 @@ This repository continues the robot-side development of the Semantic Shared Cont
 
 The ROS2 code consumes a pinned version of the server-owned pure library. The library does not depend on this repository. Repository ownership is separate from deployment: fusion and optimization initially run on the robot computer, while the robot-side gate retains final motion authority. See [Repository Ownership](https://github.com/ZenWang00/semantic-shared-control/wiki/Repository-Ownership-and-Cross-Repository-Workflow) for the complete boundary.
 
-The current design is proposed work. The existing adapters do not establish that the shared-control contracts, stop behavior or timing guarantees have been implemented or validated. Phase 1's synthetic controller and complete offline runner belong here; that phase requires no ROS graph, device drivers or hardware.
+The current design is proposed work. The existing adapters do not establish that the shared-control contracts, stop behavior or timing guarantees have been implemented or validated. Phase 1's [offline runner](docs/offline-loop.md) connects the shared algorithms to the synthetic controller, local authority and immutable replay here; it requires no ROS graph, device drivers or hardware. This software evidence does not validate the inherited hardware adapters.
 
 ## Shared project documentation and work
 
