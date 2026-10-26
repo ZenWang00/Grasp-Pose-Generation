@@ -9,7 +9,7 @@ import time
 
 from ssc_core import (AppliedCommandReference, HostCheckerSpec, NUMERIC_OFFLINE_V1,
                       SupervisedOptimizer, estimate_intent, get_intent_config,
-                      parse_message, to_dict)
+                      parse_message, parse_record, to_dict)
 from .gate import CommandGate
 from .lifecycle import LifecycleCoordinator, LifecycleState as S, SessionRuntime
 from .plant import ControllerError, PLANT_TICK_NS, SyntheticController
@@ -54,7 +54,8 @@ class OfflineLoop:
         if session_id != self.session_id:
             raise ValueError("create a new OfflineLoop for a new session")
         self.store, self.request = self.fixture.create_store(session_id)
-        self.plant = SyntheticController(self.fixture.records["SessionConfig"], session_id=session_id,
+        config = parse_record("SessionConfig", self.fixture.records["SessionConfig"], policy=NUMERIC_OFFLINE_V1)
+        self.plant = SyntheticController(config, session_id=session_id,
             clock_ns=self.clock, clock_id=self.clock.clock_id, initial_joints=self.initial_joints)
         self.coordinator = SnapshotCoordinator(self.store, clock_ns=self.clock, clock_id=self.clock.clock_id,
             joystick_source_id="offline-joystick", robot_state_source_id=self.plant.source_id, mapping_id=MAPPING)
