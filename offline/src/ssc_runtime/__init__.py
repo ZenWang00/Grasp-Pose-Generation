@@ -10,8 +10,14 @@ from .snapshots import (
 )
 from .constraints import SyntheticHostChecker, basic_step_constraints, proxy_forward, proxy_inverse
 from .gate import AcceptedTarget, CommandAdapter, CommandGate, GateDecision
+from .lifecycle import (
+    LifecycleCoordinator, LifecycleError, LifecycleRecord, LifecycleState,
+    SessionRuntime, WorkerCanceller,
+)
 
 __all__ = [
+    "LifecycleCoordinator", "LifecycleError", "LifecycleRecord", "LifecycleState",
+    "SessionRuntime", "WorkerCanceller",
     "ActivationOutcome", "ActivationRequest", "ActiveBundle", "ActiveBundleStore",
     "HostCompatibility", "InitializationAttempt",
     "AcceptedCommand", "DispatchRecord", "FrozenSnapshot", "ResultArrival",

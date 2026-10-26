@@ -9,6 +9,7 @@ on:
       - 'docs/active-bundle.md'
       - 'docs/snapshots.md'
       - 'docs/command-gate.md'
+      - 'docs/lifecycle.md'
       - '.github/workflows/offline-runtime.yml'
 
 permissions:
@@ -33,7 +34,7 @@ jobs:
           python -m pip wheel --no-deps --wheel-dir dist ./offline
           python -m venv .venv-offline
           .venv-offline/bin/python -m pip install 'dist/ssc_core-0.6.0-py3-none-any.whl[test]'
-          .venv-offline/bin/python -m pip install --no-deps dist/ssc_runtime-0.3.0-py3-none-any.whl
+          .venv-offline/bin/python -m pip install --no-deps dist/ssc_runtime-0.4.0-py3-none-any.whl
       - name: Test installed consumer and real producer receipts
         run: |
           .venv-offline/bin/python -m pytest offline/tests --basetemp=test-evidence --junitxml=test-results.xml
@@ -54,6 +55,7 @@ jobs:
             test-evidence/**/concurrency-trace.json
             test-evidence/**/snapshot-trace.json
             test-evidence/**/gate-trace.json
+            test-evidence/**/lifecycle-trace.json
             dependencies.txt
             runtime-revision.txt
             core-revision.txt

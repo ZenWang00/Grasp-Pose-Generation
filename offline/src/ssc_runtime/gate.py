@@ -2,6 +2,7 @@
 
 This module consumes lifecycle authority. It does not infer engagement, run a
 watchdog, advance a plant, or claim a submitted command was physically executed.
+Engagement, watchdogs and recovery live in lifecycle.LifecycleCoordinator.
 """
 
 from dataclasses import dataclass
@@ -54,9 +55,9 @@ class GateDecision:
 class CommandGate:
     """One trusted gate per SnapshotCoordinator; worker input is only submit().
 
-    Lifecycle alone calls set_authority()/local_hold(). Initialization is
-    disabled. A current failure interlocks motion until lifecycle explicitly
-    grants permission again; recovery/epoch transitions belong to issue #4.
+    Lifecycle alone calls set_authority()/local_hold()/local_stop(). Initialization
+    is disabled. A current failure interlocks motion until lifecycle explicitly
+    grants permission again; LifecycleCoordinator owns recovery/epoch transitions.
     """
 
     def __init__(self, coordinator: SnapshotCoordinator, adapter: CommandAdapter, *,
@@ -216,11 +217,22 @@ class CommandGate:
 
     def local_hold(self, reason: str) -> GateDecision:
         """Trusted coordinator path; allocates a new sequence, never a fake snapshot."""
+        return self._trusted_local(reason, fault=False)
+
+    def local_stop(self, reason: str) -> GateDecision:
+        """Trusted fault path: cancel then stop, without needing fresh feedback.
+
+        Always requests FAULT. Used by the lifecycle for controller faults and
+        latched conditions; a worker can never reach this method.
+        """
+        return self._trusted_local(reason, fault=True)
+
+    def _trusted_local(self, reason, *, fault):
         if type(reason) is not str or not reason.strip():
             raise ValueError("hold reason required")
         with self._coordinator.command_transaction() as bundle:
             now = self._coordinator._now()
-            return self._finish(self._local_hold(reason, bundle, now))
+            return self._finish(self._local_hold(reason, bundle, now, fault=fault))
 
     def _reject_current(self, result_id, reason, bundle, now, *, fault=False):
         fallback = self._local_hold(reason, bundle, now, fault=fault)
