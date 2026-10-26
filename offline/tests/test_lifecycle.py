@@ -866,6 +866,8 @@ def test_failed_stop_while_faulted_revokes_earlier_clearance(h, new_session):
     assert h.lc.state is S.FAULT and not h.lc.fault_cleared
     with pytest.raises(LifecycleError, match="fault_not_cleared"):
         h.lc.rearm("operator rearm")
+    refusal = h.lc.records[-1]
+    assert refusal.event == "rearm_refused" and "request failed" in refusal.detail
     h.adapter.fail.clear()
     h.lc.controller_status(ready=True)  # healthy report after the failed stop
     h.lc.rearm("operator rearm after clearance")

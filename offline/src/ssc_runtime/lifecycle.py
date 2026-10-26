@@ -6,17 +6,21 @@ callbacks and supervisor signals never grant motion: every path to ACTIVE needs
 a fresh neutral-then-nonzero engagement observed by this object while READY.
 Adapter calls are submissions; nothing here claims observed physical stopping.
 
-Lock order is lifecycle -> coordinator -> context. Registry preflight
+Lock order is lifecycle -> coordinator -> context. Gate preflight
 (CommandGate.submit) and numerical preparation (ActiveBundleStore.prepare) run
-without the lifecycle lock, so withdrawal never waits for a worker, a solve or
-numerical preparation. A release sample still passes through
-SnapshotCoordinator.receive, which registers the sample under the coordinator
-lock and can therefore wait briefly behind a concurrent gate preflight holding
-that lock; the runner keeps such preflights short (see docs/lifecycle.md).
+without the lifecycle lock, and no withdrawal waits for a worker or a solve.
+Both do hold the store's artifact lock, however, and SnapshotCoordinator.receive
+holds the coordinator lock while it waits for that artifact lock to register a
+sample. While a sample waits there, every withdrawal (including a fault stop)
+waits for the coordinator lock too: briefly behind a gate preflight while
+ACTIVE, and for up to a whole preparation in VALIDATING, where no motion target
+exists. See docs/lifecycle.md for the runner obligation.
 
 Adapters and the worker canceller must not call back into this object. Such a
-reentrant call is refused with LifecycleError("reentrant_call"), which the gate
-records as an adapter failure (FAULT) instead of a silently corrupted withdrawal.
+reentrant call is refused by raising LifecycleError("reentrant_call") to the
+caller. When an adapter lets it propagate, as the protocol expects of a failed
+submission, the gate records an adapter failure and FAULT latches; a canceller
+refusal is recorded on the withdrawal. A callback the adapter swallows is lost.
 """
 
 from contextlib import contextmanager
@@ -368,10 +372,12 @@ class LifecycleCoordinator:
         if failed and to is not FAULT:
             to = FAULT
             reason = f"{reason}; local hold/stop request failed"
-        if to is FAULT and (before is not FAULT or failed):
+        if to is FAULT and before is not FAULT:
+            self._latch(reason)
+        elif failed:
             # A failed request is a new FAULT cause even while latched: it
             # revokes any earlier clearance.
-            self._latch(reason)
+            self._latch(f"{reason}; adapter request failed while FAULT was latched")
         self._state = to
         self._pause_causes = set(causes) if to is PAUSED else set()
         applied = decision.applied

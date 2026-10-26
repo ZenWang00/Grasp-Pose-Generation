@@ -52,19 +52,24 @@ Requests are not observed stopping: `LifecycleRecord.observed_execution` is
 always null.
 
 Release or disable is processed inside `on_input` and never waits for a dispatch
-cycle, worker, solve or numerical preparation (`ActiveBundleStore.prepare` and
-gate preflight run without the lifecycle lock). The sample itself still passes
-through the existing `SnapshotCoordinator.receive`, which registers it while
-holding the coordinator lock; it can therefore wait briefly behind a concurrent
-gate preflight that holds that lock. While ACTIVE the only such holders are
-short gate preflights, and preparation runs only in VALIDATING. This is a bound
-on lock contention, not a timing guarantee; see the handoff to #6. Discarded,
-replayed, stale or old-session messages change no state and refresh no watchdog.
+cycle, worker result or solve. Gate preflight (`CommandGate.submit`) and
+numerical preparation (`ActiveBundleStore.prepare`) run without the lifecycle
+lock, but both hold the store's artifact lock. The existing
+`SnapshotCoordinator.receive` holds the coordinator lock while it waits for that
+artifact lock to register a sample, and every withdrawal needs the coordinator
+lock. While a sample waits there, every withdrawal, including a fault stop,
+waits too: briefly behind a gate preflight or registration while ACTIVE, and for
+up to a whole preparation in VALIDATING, where no motion target exists. This is
+a description of lock contention, not a timing guarantee; see the handoff to
+#6. Discarded, replayed, stale or old-session messages change no state and
+refresh no watchdog.
 
 Adapters and the worker canceller must not call back into the lifecycle. A
-reentrant call made from inside an adapter, gate or canceller call is refused
-with `LifecycleError("reentrant_call")`: the gate records it as an adapter
-failure (FAULT), and a canceller refusal is recorded on the withdrawal.
+reentrant call made from inside an adapter, gate or canceller call is refused by
+raising `LifecycleError("reentrant_call")` to the caller. When an adapter lets
+it propagate, as the protocol expects of a failed submission, the gate records
+an adapter failure and FAULT latches; a canceller refusal is recorded on the
+withdrawal. A callback that the adapter swallows is lost without a record.
 
 ## Transitions and recovery
 
@@ -151,5 +156,5 @@ worker canceller. `test_retained_lifecycle_trace` writes `lifecycle-trace.json`
 ## Handoff to #5 and #6
 
 - The [plant (#5)](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/5) implements `CommandAdapter` as bounded, nonblocking submissions. `cancel` removes the target; `hold` uses the supplied measured state and stops advancement; `stop` clears the target without fresh feedback; targets expire at `accepted_ns + horizon` without renewal. It reports `controller_status`, including faults and post-fault health, and raises on a failed submission.
-- The [runner (#6)](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/6) routes all inputs through `on_input`, all worker results through `submit_result`, dispatches only through `dispatch_cycle`, calls `tick` every plant tick in the event order above, wires the solver supervisor to `computation_status` and `WorkerCanceller`, and archives `LifecycleCoordinator.records` with gate decisions. The supervisor reports `computation_status(ready=False)` whenever it re-prepares (new context, rearm or restart) and `ready=True` only after motion-disabled preparation for the current session and bundle. Keep gate preflights short while ACTIVE (they hold the coordinator lock that `on_input` also takes), or move sample registration in `SnapshotCoordinator.receive` out of that lock in a follow-up; record measured release latency as integration evidence rather than inferring it. Adapters must not call back into the lifecycle; deliver controller status from the runner loop.
+- The [runner (#6)](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/6) routes all inputs through `on_input`, all worker results through `submit_result`, dispatches only through `dispatch_cycle`, calls `tick` every plant tick in the event order above, wires the solver supervisor to `computation_status` and `WorkerCanceller`, and archives `LifecycleCoordinator.records` with gate decisions. The supervisor reports `computation_status(ready=False)` whenever it re-prepares (new context, rearm or restart) and `ready=True` only after motion-disabled preparation for the current session and bundle. Keep artifact-lock holders short while ACTIVE (gate preflight and registration hold the store artifact lock, which `SnapshotCoordinator.receive` waits for while holding the coordinator lock that every withdrawal needs), avoid feeding samples into a long preparation if fault-stop latency matters there, or move sample registration out of the coordinator lock in a follow-up; record measured release and fault-stop latency as integration evidence rather than inferring it. Adapters must not call back into the lifecycle; deliver controller status from the runner loop.
 - Unresolved hardware verification: the real controller stop mechanism and timing, real clock mapping and drift handling, controller fault reporting, and supervisor cancellation latency.
