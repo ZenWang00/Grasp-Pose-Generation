@@ -2,7 +2,7 @@
 
 P1-17 / [server issue #30](https://github.com/ZenWang00/semantic-shared-control/issues/30)
 upgrades the P1-16 loop to `ssc-runtime==0.7.0` and `ssc-core==0.10.0` at
-`4dbf12bcab2d7577fd9e477ab28171b7336bd406`. It explicitly selects
+`6aaf178bc3f07735e298c9b8c05b1b6e2e672948`. It explicitly selects
 `solver-slsqp-batch-v2`, `offline-reference-batch-v2` and new session configuration
 IDs. Schema 1.0 and geometry-residual-v1 remain unchanged; the original base
 profile and model/host resources retain their frozen bytes and IDs.
@@ -16,7 +16,7 @@ From a clean checkout of this repository at the revision to test:
 
 ```sh
 git clone https://github.com/ZenWang00/semantic-shared-control.git shared-core
-git -C shared-core checkout 4dbf12bcab2d7577fd9e477ab28171b7336bd406
+git -C shared-core checkout 6aaf178bc3f07735e298c9b8c05b1b6e2e672948
 python3.12 -m pip wheel --no-deps --wheel-dir dist ./shared-core
 python3.12 -m pip wheel --no-deps --wheel-dir dist ./offline
 python3.12 -m venv .venv-offline
