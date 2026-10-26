@@ -298,6 +298,9 @@ def test_real_run_archive_and_fresh_process_replay(tmp_path, make_loop):
         loop.close()
         evidence = export_run(loop, tmp_path / "run.json", software)
     loaded = RunArchive.read(evidence["path"], expected_sha256=evidence["sha256"])
+    envelope = json.loads(loaded.to_bytes())
+    assert evidence["payload_sha256"] == envelope["sha256"]
+    assert evidence["payload_sha256"] != evidence["sha256"]
     assert evidence["accepted_moves"] == 3
     replay = subprocess.run([sys.executable, "-I", "-m", "ssc_core.replay", evidence["path"],
                              "--sha256", evidence["sha256"]], capture_output=True, text=True, timeout=60)

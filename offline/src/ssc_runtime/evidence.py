@@ -103,6 +103,7 @@ def export_run(loop, path, software):
         "samples": loop.callback_timings})
     archive = builder.seal()
     digest = archive.write(path)
-    return {"path": str(path), "sha256": digest, "payload_sha256": archive.sha256,
+    return {"path": str(path), "sha256": digest,
+            "payload_sha256": json.loads(archive.to_bytes())["sha256"],
             "software": software, "snapshots": len(loop.dispatches),
             "accepted_moves": sum(d.disposition == "accepted_move" for d in loop.gate.decisions)}
