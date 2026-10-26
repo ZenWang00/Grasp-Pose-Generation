@@ -1,0 +1,358 @@
+{
+  "fixture_kind": "synthetic_structure_only",
+  "constraint_programs": [
+    {
+      "program_id": "program-bottle-distance-offline-v1",
+      "source_sha256": "a686a0b43a1e5e8dd24b8cab1f8015bb81c89975e4d42fd253dee29bcd40cea2",
+      "function_api_version": "geometry-residual-v1",
+      "object_id": "object-bottle-offline-v1",
+      "description": "Synthetic distance relation with zero tolerance, using the offline reference approach point.",
+      "entrypoint": "evaluate",
+      "source_code": "def evaluate(p_tcp, R_control_tcp, keypoints, axis_dirs, params):\n    distance = norm(p_tcp - keypoints[0])\n    return distance - params[0]\n",
+      "keypoint_bindings": [
+        "kp-bottle-approach-offline-v1"
+      ],
+      "axis_bindings": [],
+      "parameters": [
+        {
+          "name": "distance_tolerance",
+          "value": 0,
+          "unit": "m"
+        }
+      ],
+      "output_unit": "m"
+    },
+    {
+      "program_id": "program-cup-distance-offline-v1",
+      "source_sha256": "a686a0b43a1e5e8dd24b8cab1f8015bb81c89975e4d42fd253dee29bcd40cea2",
+      "function_api_version": "geometry-residual-v1",
+      "object_id": "object-cup-offline-v1",
+      "description": "Synthetic distance relation with zero tolerance, using the offline reference approach point.",
+      "entrypoint": "evaluate",
+      "source_code": "def evaluate(p_tcp, R_control_tcp, keypoints, axis_dirs, params):\n    distance = norm(p_tcp - keypoints[0])\n    return distance - params[0]\n",
+      "keypoint_bindings": [
+        "kp-cup-approach-offline-v1"
+      ],
+      "axis_bindings": [],
+      "parameters": [
+        {
+          "name": "distance_tolerance",
+          "value": 0,
+          "unit": "m"
+        }
+      ],
+      "output_unit": "m"
+    }
+  ],
+  "validation_receipts": [],
+  "execution_bindings": [
+    {
+      "binding_id": "binding-bottle-offline-v1",
+      "program_id": "program-bottle-distance-offline-v1",
+      "config_id": "config-offline-v1",
+      "normalization_scale": 0.01,
+      "weight": 1.0,
+      "validation_receipt_id": "unissued-receipt-bottle-offline-v1"
+    },
+    {
+      "binding_id": "binding-cup-offline-v1",
+      "program_id": "program-cup-distance-offline-v1",
+      "config_id": "config-offline-v1",
+      "normalization_scale": 0.01,
+      "weight": 1.0,
+      "validation_receipt_id": "unissued-receipt-cup-offline-v1"
+    }
+  ],
+  "messages": [
+    {
+      "message_type": "SessionConfig",
+      "meta": {
+        "schema_version": "1.0",
+        "session_id": "session-offline-v1",
+        "message_id": "message-sessionconfig-offline-v1",
+        "source_id": "synthetic-host-offline-v1",
+        "sequence": 0,
+        "produced_at": {
+          "clock_id": "synthetic-clock-offline-v1",
+          "sec": 10,
+          "nanosec": 0
+        }
+      },
+      "payload": {
+        "config_id": "config-offline-v1",
+        "control_frame": "synthetic_base",
+        "tcp_frame": "synthetic_tcp",
+        "robot_model_id": "synthetic-rotary-v1",
+        "validation_policy_id": "numeric-offline-v1",
+        "motion_constraint_set_id": "synthetic-host-v1",
+        "control_period_s": 0.2,
+        "max_xy_speed_mps": 0.05,
+        "max_linear_speed_mps": 0.05,
+        "max_angular_speed_radps": 0.5,
+        "joystick_timeout_s": 0.5,
+        "robot_state_timeout_s": 0.5,
+        "solve_budget_s": 0.15,
+        "max_command_age_s": 0.2,
+        "history_window_s": 1,
+        "max_capture_skew_s": 0.01
+      }
+    },
+    {
+      "message_type": "TaskContext",
+      "meta": {
+        "schema_version": "1.0",
+        "session_id": "session-offline-v1",
+        "message_id": "message-taskcontext-offline-v1",
+        "source_id": "synthetic-host-offline-v1",
+        "sequence": 1,
+        "produced_at": {
+          "clock_id": "synthetic-clock-offline-v1",
+          "sec": 10,
+          "nanosec": 0
+        }
+      },
+      "payload": {
+        "task_id": "task-bottle-cup-offline-v1",
+        "revision": 1,
+        "instruction": "Synthetic approach to the bottle or cup under offline-reference-v1."
+      }
+    },
+    {
+      "message_type": "SceneObservation",
+      "meta": {
+        "schema_version": "1.0",
+        "session_id": "session-offline-v1",
+        "message_id": "message-sceneobservation-offline-v1",
+        "source_id": "synthetic-host-offline-v1",
+        "sequence": 2,
+        "produced_at": {
+          "clock_id": "synthetic-clock-offline-v1",
+          "sec": 10,
+          "nanosec": 0
+        }
+      },
+      "payload": {
+        "observation_id": "observation-bottle-cup-offline-v1",
+        "scene_id": "scene-bottle-cup-offline-v1",
+        "rgb_stamp": {
+          "clock_id": "synthetic-clock-offline-v1",
+          "sec": 10,
+          "nanosec": 0
+        },
+        "depth_stamp": {
+          "clock_id": "synthetic-clock-offline-v1",
+          "sec": 10,
+          "nanosec": 1000000
+        },
+        "camera_frame": "synthetic_camera_optical",
+        "rgb_ref": {
+          "asset_id": "rgb-synthetic-offline-v1",
+          "media_type": "image/png",
+          "encoding": "uint8_rgb",
+          "shape": [
+            480,
+            640,
+            3
+          ]
+        },
+        "depth_ref": {
+          "asset_id": "depth-synthetic-offline-v1",
+          "media_type": "application/octet-stream",
+          "encoding": "float32_m",
+          "shape": [
+            480,
+            640
+          ]
+        },
+        "K": [
+          [
+            600,
+            0,
+            319.5
+          ],
+          [
+            0,
+            600,
+            239.5
+          ],
+          [
+            0,
+            0,
+            1
+          ]
+        ],
+        "projection_model": "pinhole_rectified",
+        "calibration_id": "calibration-synthetic-offline-v1",
+        "T_control_camera": {
+          "parent_frame": "synthetic_base",
+          "child_frame": "synthetic_camera_optical",
+          "sampled_at": {
+            "clock_id": "synthetic-clock-offline-v1",
+            "sec": 10,
+            "nanosec": 0
+          },
+          "pose": {
+            "position_xyz": [
+              0,
+              0,
+              0
+            ],
+            "quaternion_xyzw": [
+              0,
+              0,
+              0,
+              1
+            ]
+          }
+        }
+      }
+    },
+    {
+      "message_type": "SceneGeometry",
+      "meta": {
+        "schema_version": "1.0",
+        "session_id": "session-offline-v1",
+        "message_id": "message-scenegeometry-offline-v1",
+        "source_id": "synthetic-perception-offline-v1",
+        "sequence": 3,
+        "produced_at": {
+          "clock_id": "synthetic-clock-offline-v1",
+          "sec": 10,
+          "nanosec": 0
+        }
+      },
+      "payload": {
+        "geometry_id": "geometry-bottle-cup-offline-v1",
+        "scene_id": "scene-bottle-cup-offline-v1",
+        "feature_set_id": "features-bottle-cup-offline-v1",
+        "revision": 1,
+        "observation_id": "observation-bottle-cup-offline-v1",
+        "frame_id": "synthetic_base",
+        "mode": "static",
+        "objects": [
+          {
+            "object_id": "object-bottle-offline-v1",
+            "label": "bottle"
+          },
+          {
+            "object_id": "object-cup-offline-v1",
+            "label": "cup"
+          }
+        ],
+        "keypoints": [
+          {
+            "keypoint_id": "kp-bottle-approach-offline-v1",
+            "object_id": "object-bottle-offline-v1",
+            "position_xyz": [
+              0.41,
+              0,
+              0.3
+            ]
+          },
+          {
+            "keypoint_id": "kp-cup-approach-offline-v1",
+            "object_id": "object-cup-offline-v1",
+            "position_xyz": [
+              0.39,
+              0,
+              0.3
+            ]
+          }
+        ],
+        "axes": []
+      }
+    },
+    {
+      "message_type": "SemanticContext",
+      "meta": {
+        "schema_version": "1.0",
+        "session_id": "session-offline-v1",
+        "message_id": "message-semanticcontext-offline-v1",
+        "source_id": "synthetic-perception-offline-v1",
+        "sequence": 4,
+        "produced_at": {
+          "clock_id": "synthetic-clock-offline-v1",
+          "sec": 10,
+          "nanosec": 0
+        }
+      },
+      "payload": {
+        "semantic_id": "semantic-bottle-cup-offline-v1",
+        "task_id": "task-bottle-cup-offline-v1",
+        "task_revision": 1,
+        "scene_id": "scene-bottle-cup-offline-v1",
+        "feature_set_id": "features-bottle-cup-offline-v1",
+        "observation_id": "observation-bottle-cup-offline-v1",
+        "object_relevance": [
+          {
+            "object_id": "object-bottle-offline-v1",
+            "task_relevance": 0.5
+          },
+          {
+            "object_id": "object-cup-offline-v1",
+            "task_relevance": 0.5
+          }
+        ],
+        "program_refs": [
+          {
+            "program_id": "program-bottle-distance-offline-v1",
+            "source_sha256": "a686a0b43a1e5e8dd24b8cab1f8015bb81c89975e4d42fd253dee29bcd40cea2"
+          },
+          {
+            "program_id": "program-cup-distance-offline-v1",
+            "source_sha256": "a686a0b43a1e5e8dd24b8cab1f8015bb81c89975e4d42fd253dee29bcd40cea2"
+          }
+        ]
+      }
+    }
+  ],
+  "fixture_id": "bottle-cup-offline-v1",
+  "profile_id": "offline-reference-v1",
+  "notice": "Synthetic offline-reference-v1 inputs, not robot measurements or an activated runtime bundle. No host validation receipts have been issued. Execution binding receipt IDs deliberately remain unresolved until the later trusted validation stage.",
+  "initial_pose": {
+    "position_xyz": [
+      0.4,
+      0,
+      0.3
+    ],
+    "quaternion_xyzw": [
+      0,
+      0,
+      0,
+      1
+    ]
+  },
+  "initial_joint_names": [
+    "q1",
+    "q2",
+    "q3",
+    "q4",
+    "q5",
+    "q6"
+  ],
+  "initial_joint_positions_rad": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "current_input_xy": [
+    1,
+    0
+  ],
+  "dt_s": 0.2,
+  "earlier_input": {
+    "sampled_at": {
+      "clock_id": "synthetic-clock-offline-v1",
+      "sec": 9,
+      "nanosec": 980000000
+    },
+    "u_xy": [
+      1,
+      0
+    ],
+    "enabled": true
+  }
+}

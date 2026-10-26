@@ -1,0 +1,56 @@
+name: Offline runtime validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'offline/**'
+      - 'docs/active-bundle.md'
+      - '.github/workflows/offline-runtime.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  activation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ZenWang00/semantic-shared-control
+          ref: 95d618f567f5f057a1b3f1737cc394a105fa9a4e
+          path: shared-core
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build version-pinned wheels
+        run: |
+          python -m pip wheel --no-deps --wheel-dir dist ./shared-core
+          python -m pip wheel --no-deps --wheel-dir dist ./offline
+          python -m venv .venv-offline
+          .venv-offline/bin/python -m pip install 'dist/ssc_core-0.6.0-py3-none-any.whl[test]'
+          .venv-offline/bin/python -m pip install --no-deps dist/ssc_runtime-0.1.0-py3-none-any.whl
+      - name: Test installed consumer and real producer receipts
+        run: |
+          .venv-offline/bin/python -m pytest offline/tests --basetemp=test-evidence --junitxml=test-results.xml
+          .venv-offline/bin/python -m pip check
+          .venv-offline/bin/python -m pip freeze > dependencies.txt
+          git rev-parse HEAD > runtime-revision.txt
+          git -C shared-core rev-parse HEAD > core-revision.txt
+          sha256sum dist/*.whl > wheel-sha256.txt
+          cmp offline/tests/fixtures/bottle_cup_offline_v1.json shared-core/tests/fixtures/shared_control/bottle_cup_offline_v1.json
+      - name: Retain version pair and activation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-runtime-validation
+          path: |
+            dist/*.whl
+            test-results.xml
+            test-evidence/**/concurrency-trace.json
+            dependencies.txt
+            runtime-revision.txt
+            core-revision.txt
+            wheel-sha256.txt
