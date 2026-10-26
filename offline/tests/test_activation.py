@@ -2,7 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, replace
 import json
 import sys
-from threading import Event
+from threading import Barrier, Event
 
 import pytest
 
@@ -239,7 +239,8 @@ def test_late_prepared_result_cannot_restore_old_context(build, replacement):
 def test_concurrent_completion_and_atomic_readers(build, monkeypatch, tmp_path):
     store, request, _, _ = build()
     original = activate(store, request)
-    entered, finish = Event(), Event()
+    entered, finish, published = Event(), Event(), Event()
+    before_publish = Barrier(4)
     resolve = store._resolve
     slow = store.begin(request)
     def delayed(attempt):
@@ -258,7 +259,11 @@ def test_concurrent_completion_and_atomic_readers(build, monkeypatch, tmp_path):
             current = store.begin(request)
             prepared = store.prepare(current)
             def read_many():
-                seen = []
+                assert store.acquire() is None
+                seen = [None]
+                before_publish.wait(timeout=5)
+                assert published.wait(5)
+                assert store.acquire() is prepared.bundle
                 for _ in range(100):
                     value = store.acquire()
                     assert value is None or value is prepared.bundle
@@ -268,11 +273,14 @@ def test_concurrent_completion_and_atomic_readers(build, monkeypatch, tmp_path):
                     seen.append(None if value is None else value.activation_id)
                 return seen
             readers = [pool.submit(read_many) for _ in range(3)]
+            before_publish.wait(timeout=5)
             assert store.publish(prepared).status == "activated"
+            published.set()
             for reader in readers:
                 trace.append({"stage": "concurrent_read", "values": reader.result(timeout=5)})
         finally:
             finish.set()
+            published.set()
         late = future.result(timeout=5)
     assert late.status == "superseded" and late.bundle is None
     assert store.acquire() is prepared.bundle
