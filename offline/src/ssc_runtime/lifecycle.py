@@ -8,12 +8,21 @@ Adapter calls are submissions; nothing here claims observed physical stopping.
 
 Lock order is lifecycle -> coordinator -> context. Registry preflight
 (CommandGate.submit) and numerical preparation (ActiveBundleStore.prepare) run
-without the lifecycle lock, so withdrawal never waits for them.
+without the lifecycle lock, so withdrawal never waits for a worker, a solve or
+numerical preparation. A release sample still passes through
+SnapshotCoordinator.receive, which registers the sample under the coordinator
+lock and can therefore wait briefly behind a concurrent gate preflight holding
+that lock; the runner keeps such preflights short (see docs/lifecycle.md).
+
+Adapters and the worker canceller must not call back into this object. Such a
+reentrant call is refused with LifecycleError("reentrant_call"), which the gate
+records as an adapter failure (FAULT) instead of a silently corrupted withdrawal.
 """
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
-from threading import RLock
+from threading import RLock, local
 from typing import Callable, Protocol
 from uuid import uuid4
 
@@ -140,6 +149,7 @@ class LifecycleCoordinator:
         self._factory, self._canceller = session_factory, worker_canceller
         self._liveness_ns = _duration(liveness_timeout_s)
         self._lock = RLock()
+        self._callout = local()  # per-thread: inside an adapter/canceller call
         self._records: list[LifecycleRecord] = []
         self._retired: list[SessionRuntime] = []
         self._used_sessions: set[str] = set()
@@ -280,9 +290,25 @@ class LifecycleCoordinator:
         return self._log(kind, event, reason, before=self._state,
                          epoch_before=self._runtime.coordinator.control_epoch, at_ns=at_ns, detail=detail)
 
+    @contextmanager
+    def _calling_out(self):
+        """Mark this thread as inside adapter/gate/canceller calls."""
+        depth = getattr(self._callout, "depth", 0)
+        self._callout.depth = depth + 1
+        try:
+            yield
+        finally:
+            self._callout.depth = depth
+
+    def _reject_reentry(self):
+        if getattr(self._callout, "depth", 0):
+            raise LifecycleError("reentrant_call",
+                                 "an adapter, gate or worker canceller called back into the lifecycle")
+
     def _cancel_work(self, epoch, reason):
         try:
-            self._canceller.cancel(epoch, reason)
+            with self._calling_out():
+                self._canceller.cancel(epoch, reason)
             return None
         except Exception as exc:  # best effort: epoch validation still protects
             return f"worker_cancel: {type(exc).__name__}: {exc}"
@@ -327,17 +353,24 @@ class LifecycleCoordinator:
             self._withdrawal_input_seq = latest.message.meta.sequence if latest else -1
             decision = gate_decision
             if decision is None:
-                decision = gate.local_stop(reason) if stop else gate.local_hold(reason)
+                with self._calling_out():
+                    decision = gate.local_stop(reason) if stop else gate.local_hold(reason)
                 actions += ["allocate_local_hold", *decision.actions]
         cancel_error = self._cancel_work(old, reason)
         actions.append("cancel_worker")
         self._engaged_ns = self._engaged_bundle = self._armed_seq = self._ready_seen_seq = None
         self._outstanding.clear()
+        if COMPUTATION in causes:
+            # Owner decision 1: recovery needs a supervisor readiness signal
+            # issued after this failure; earlier readiness no longer counts.
+            self._computation_ready = False
         failed = decision.disposition == "adapter_failure"
         if failed and to is not FAULT:
             to = FAULT
             reason = f"{reason}; local hold/stop request failed"
-        if to is FAULT and before is not FAULT:
+        if to is FAULT and (before is not FAULT or failed):
+            # A failed request is a new FAULT cause even while latched: it
+            # revokes any earlier clearance.
             self._latch(reason)
         self._state = to
         self._pause_causes = set(causes) if to is PAUSED else set()
@@ -359,14 +392,15 @@ class LifecycleCoordinator:
         for name in ("cancel", "stop"):
             actions.append(name)
             try:
-                getattr(gate._adapter, name)()
+                with self._calling_out():
+                    getattr(gate._adapter, name)()
             except Exception as exc:
                 errors.append(f"{name}: {type(exc).__name__}: {exc}")
         cancel_error = self._cancel_work(old, event)
         actions.append("cancel_worker")
         to = FAULT if before is FAULT or errors else UNINITIALIZED
-        if to is FAULT and before is not FAULT:
-            self._latch(f"{event}; stop request failed")
+        if to is FAULT and (before is not FAULT or errors):
+            self._latch(f"{event}; cancel/stop request failed")
         self._state = to
         self._log("withdrawal", event, detail, before=before, epoch_before=old, at_ns=None,
                   actions=actions, adapter_error="; ".join(errors) or None, detail=cancel_error)
@@ -386,6 +420,8 @@ class LifecycleCoordinator:
         self._retired.append(old_runtime)
         self._runtime = runtime
         self._reset_session_state()
+        # The solver supervisor must prepare again for the new session.
+        self._computation_ready = False
         try:
             at_ns = runtime.coordinator._now()
         except SnapshotError:
@@ -401,6 +437,7 @@ class LifecycleCoordinator:
         Release/disable withdraws immediately, without awaiting a cycle or a
         worker. Rejected or replayed samples are recorded and change nothing.
         """
+        self._reject_reentry()
         runtime = self._runtime
         try:
             timed = runtime.coordinator.receive(data)
@@ -538,6 +575,7 @@ class LifecycleCoordinator:
     # -------------------------------------------------------------- watchdog
     def tick(self) -> None:
         """Watchdogs at the current local time: sources, deadlines, liveness."""
+        self._reject_reentry()
         with self._lock:
             self._guard(self._tick)
 
@@ -562,6 +600,7 @@ class LifecycleCoordinator:
     # -------------------------------------------------------------- dispatch
     def dispatch_cycle(self) -> DispatchRecord | None:
         """Freeze and dispatch one snapshot, only while ACTIVE."""
+        self._reject_reentry()
         with self._lock:
             return self._guard(self._dispatch)
 
@@ -590,10 +629,12 @@ class LifecycleCoordinator:
     # --------------------------------------------------------------- results
     def submit_result(self, data: dict | Message, *, weights: dict | Message | None = None) -> GateDecision | None:
         """Worker result entry point. Gate preflight runs without the lifecycle lock."""
+        self._reject_reentry()
         runtime = self._runtime
         epoch = runtime.coordinator.control_epoch
         try:
-            decision = runtime.gate.submit(data, weights=weights)
+            with self._calling_out():
+                decision = runtime.gate.submit(data, weights=weights)
         except SnapshotError as exc:
             if exc.code != "invalid_clock":
                 raise
@@ -634,6 +675,7 @@ class LifecycleCoordinator:
     # --------------------------------------------------------- initialization
     def begin_initialization(self, request: ActivationRequest) -> InitializationAttempt:
         """Start a motion-disabled initialization; withdraws first if needed."""
+        self._reject_reentry()
         with self._lock:
             return self._guard(self._begin, request)
 
@@ -656,6 +698,7 @@ class LifecycleCoordinator:
 
     def prepare_initialization(self, attempt: InitializationAttempt) -> ActivationOutcome:
         """Run validation outside the lifecycle lock; host failures latch FAULT."""
+        self._reject_reentry()
         runtime = self._runtime
         with self._lock:
             if attempt is not self._attempt or self._state is not VALIDATING:
@@ -674,6 +717,7 @@ class LifecycleCoordinator:
 
     def complete_initialization(self, outcome: ActivationOutcome) -> ActivationOutcome:
         """Publish a prepared current attempt. Never engages motion."""
+        self._reject_reentry()
         with self._lock:
             return self._guard(self._complete, outcome)
 
@@ -703,6 +747,7 @@ class LifecycleCoordinator:
         return self.complete_initialization(self.prepare_initialization(attempt))
 
     def cancel_initialization(self, reason: str) -> None:
+        self._reject_reentry()
         _text(reason, "reason")
         with self._lock:
             self._guard(self._cancel_initialization, reason)
@@ -719,6 +764,7 @@ class LifecycleCoordinator:
     # ------------------------------------------------------ invalidation/faults
     def invalidate_context(self, reason: str) -> None:
         """Task/scene/semantic/feature/configuration invalidation."""
+        self._reject_reentry()
         _text(reason, "reason")
         with self._lock:
             self._guard(self._invalidate, reason)
@@ -741,6 +787,7 @@ class LifecycleCoordinator:
 
     def controller_status(self, *, ready: bool, fault: str | None = None) -> None:
         """Trusted controller status. A fault latches FAULT from any state."""
+        self._reject_reentry()
         if type(ready) is not bool:
             raise TypeError("ready must be boolean")
         if fault is not None:
@@ -768,6 +815,7 @@ class LifecycleCoordinator:
 
     def computation_status(self, *, ready: bool, reason: str) -> None:
         """Trusted solver-supervisor readiness, issued after motion-disabled preparation."""
+        self._reject_reentry()
         if type(ready) is not bool:
             raise TypeError("ready must be boolean")
         _text(reason, "reason")
@@ -785,6 +833,7 @@ class LifecycleCoordinator:
 
     def rearm(self, reason: str) -> LifecycleRecord:
         """Explicit operator rearm; only after a controller report clears the fault."""
+        self._reject_reentry()
         _text(reason, "reason")
         with self._lock:
             return self._guard(self._rearm, reason)
@@ -805,6 +854,7 @@ class LifecycleCoordinator:
     # ---------------------------------------------------------------- session
     def restart_session(self, reason: str, *, new_session_id: str | None = None) -> str:
         """Withdraw, then retire all session records and counters. FAULT stays latched."""
+        self._reject_reentry()
         _text(reason, "reason")
         with self._lock:
             self._guard(self._restart, reason, new_session_id)
@@ -823,6 +873,7 @@ class LifecycleCoordinator:
 
     def clock_domain_reset(self, reason: str) -> str:
         """A clock-domain epoch reset starts a new session; freshness cannot be reused."""
+        self._reject_reentry()
         _text(reason, "reason")
         with self._lock:
             self._clock_failure("clock_domain_reset", reason)

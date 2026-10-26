@@ -484,6 +484,58 @@ def test_computation_failure_needs_supervisor_readiness_neutral_and_engagement(h
     assert h.lc.state is S.ACTIVE
 
 
+def _cf_invalid_result(h, mp):
+    pair = h.result(h.lc.dispatch_cycle())
+    pair[0]["payload"]["horizon_s"] = .1  # snapshot dt_s is 0.2 s
+    h.submit(pair)
+
+
+def _cf_dispatch_failure(h, mp):
+    def broken():
+        raise RuntimeError("snapshot assembly crashed")
+
+    mp.setattr(h.coordinator, "assemble", broken)
+    with pytest.raises(RuntimeError, match="snapshot assembly crashed"):
+        h.lc.dispatch_cycle()
+
+
+COMPUTATION_FAILURES = {
+    "liveness": lambda h, mp: _ev_liveness(h),
+    "missed_deadline": lambda h, mp: _ev_missed(h),
+    "worker_hold": lambda h, mp: _ev_worker_hold(h),
+    "invalid_result": _cf_invalid_result,
+    "dispatch_failure": _cf_dispatch_failure,
+}
+
+
+@pytest.mark.parametrize("name", COMPUTATION_FAILURES)
+def test_computation_failure_needs_readiness_reported_after_the_failure(h, monkeypatch, name):
+    """Owner decision 1 without any ready=False signal: readiness from before the
+    failure never satisfies recovery or engagement."""
+    h.active()
+    assert h.lc.computation_ready  # the supervisor reported ready before engagement
+    COMPUTATION_FAILURES[name](h, monkeypatch)
+    monkeypatch.undo()
+    assert h.lc.state is S.PAUSED and h.lc.pause_causes == {"computation"}
+    assert not h.lc.computation_ready
+    for _ in range(3):  # fresh inputs, a newer neutral and eligible feedback are not enough
+        h.advance(20)
+        h.fresh((0., 0.))
+        h.lc.tick()
+        assert h.lc.state is S.PAUSED
+    h.advance(20)
+    h.fresh()
+    assert h.lc.state is S.PAUSED
+    h.lc.computation_status(ready=True, reason="worker re-prepared with motion disabled")
+    assert h.lc.state is S.PAUSED  # a held nonzero input is not a newer neutral
+    h.advance(20)
+    h.fresh((0., 0.))
+    assert h.lc.state is S.READY
+    h.advance(20)
+    h.fresh()
+    assert h.lc.state is S.ACTIVE
+
+
 def test_engagement_requires_computation_controller_and_eligible_feedback(h):
     h.feed()
     h.neutral()
@@ -778,6 +830,65 @@ def test_fault_latch_survives_session_restart(h):
     assert h.lc.state is S.UNINITIALIZED
 
 
+def test_fault_latch_survives_clock_domain_reset(h):
+    h.active()
+    h.lc.controller_status(ready=False, fault="drive fault")
+    h.clock_id = "synthetic-monotonic-epoch-2"
+    session = h.lc.clock_domain_reset("adapter reported clock epoch change")
+    assert session != SESSION and h.lc.state is S.FAULT
+    assert h.adapter.calls[-2:] == ["cancel", "stop"]
+    with pytest.raises(LifecycleError, match="fault_latched"):
+        h.lc.begin_initialization(h.requests[h.session])
+    with pytest.raises(LifecycleError, match="fault_not_cleared"):
+        h.lc.rearm("operator rearm")
+    h.lc.controller_status(ready=True)
+    h.lc.rearm("operator rearm after clearance")
+    assert h.lc.state is S.UNINITIALIZED
+
+
+def _restart(h):
+    h.lc.restart_session("operator restart", new_session_id="session-offline-v2")
+
+
+def _clock_reset(h):
+    h.clock_id = "synthetic-monotonic-epoch-2"
+    h.lc.clock_domain_reset("adapter reported clock epoch change")
+
+
+@pytest.mark.parametrize("new_session", [_restart, _clock_reset], ids=["restart", "clock_reset"])
+def test_failed_stop_while_faulted_revokes_earlier_clearance(h, new_session):
+    h.active()
+    h.lc.controller_status(ready=False, fault="drive fault")
+    h.lc.controller_status(ready=True)
+    assert h.lc.fault_cleared
+    h.adapter.fail.add("stop")
+    new_session(h)
+    assert h.lc.state is S.FAULT and not h.lc.fault_cleared
+    with pytest.raises(LifecycleError, match="fault_not_cleared"):
+        h.lc.rearm("operator rearm")
+    h.adapter.fail.clear()
+    h.lc.controller_status(ready=True)  # healthy report after the failed stop
+    h.lc.rearm("operator rearm after clearance")
+    assert h.lc.state is S.UNINITIALIZED
+
+
+@pytest.mark.parametrize("new_session", [_restart, _clock_reset], ids=["restart", "clock_reset"])
+def test_new_session_needs_new_computation_readiness(h, new_session):
+    h.active()
+    new_session(h)
+    assert h.lc.state is S.UNINITIALIZED and not h.lc.computation_ready
+    h.feed()
+    h.neutral()
+    assert h.lc.initialize(h.requests[h.session]).status == "activated"
+    h.push()
+    assert h.lc.state is S.READY
+    assert [r for r in h.lc.records if r.event == "engagement_refused"][-1].reason == "computation_not_ready"
+    h.lc.computation_status(ready=True, reason="solver prepared for the new session")
+    h.neutral()
+    h.push()
+    assert h.lc.state is S.ACTIVE
+
+
 @pytest.mark.parametrize("stop_fails", [False, True])
 def test_clock_domain_failure_stops_directly_and_starts_new_session(h, stop_fails):
     h.active()
@@ -803,6 +914,39 @@ def test_explicit_clock_domain_reset_starts_new_session(h):
     session = h.lc.clock_domain_reset("adapter reported clock epoch change")
     assert session != SESSION and h.lc.state is S.UNINITIALIZED
     assert h.adapter.calls == ["cancel", "stop"]
+
+
+def test_reentrant_adapter_call_is_refused_and_latches_fault(h):
+    """An adapter violating the protocol by calling back during a withdrawal."""
+    h.active()
+    recording_hold = h.adapter.hold
+
+    def reentrant_hold(measured_state):
+        recording_hold(measured_state)
+        h.lc.controller_status(ready=False, fault="reported from inside hold")
+
+    h.adapter.hold = reentrant_hold
+    h.neutral()
+    record = h.withdrawals()[-1]
+    assert (record.event, record.state_before, record.state_after) == ("release", S.ACTIVE, S.FAULT)
+    assert "reentrant_call" in record.adapter_error
+    assert h.lc.state is S.FAULT and h.adapter.calls[-2:] == ["hold", "stop"]
+    assert not [r for r in h.lc.records if r.event == "controller_fault"]
+    assert len(h.withdrawals()) == 1
+
+
+def test_reentrant_canceller_call_is_refused_and_recorded(h):
+    h.active()
+
+    class Reentrant:
+        def cancel(self, control_epoch, reason):
+            h.lc.restart_session("canceller misbehaves")
+
+    h.lc._canceller = Reentrant()
+    h.neutral()
+    record = h.withdrawals()[-1]
+    assert h.lc.state is S.PAUSED and "reentrant_call" in record.detail
+    assert h.session == SESSION and len(h.withdrawals()) == 1
 
 
 def test_worker_cancel_failure_is_recorded_not_awaited(h):
