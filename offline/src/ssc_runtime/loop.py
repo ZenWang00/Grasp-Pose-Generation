@@ -6,6 +6,7 @@ independently enforced by ssc-core; no simulated rate is a hardware guarantee.
 
 from dataclasses import asdict, dataclass
 import time
+from uuid import uuid4
 
 from ssc_core import (AppliedCommandReference, HostCheckerSpec, NUMERIC_OFFLINE_V1,
                       SupervisedOptimizer, estimate_intent, get_intent_config,
@@ -31,13 +32,14 @@ class SimulationClock:
 
 
 class OfflineLoop:
-    def __init__(self, variant="default", *, session_id="session-integration-v1", initial_joints=(0.,) * 6):
+    def __init__(self, variant="default", *, session_id=None, initial_joints=(0.,) * 6):
         self.clock = SimulationClock()
         self.fixture = Fixture(variant)
-        self.session_id = session_id
+        self.session_id = session_id or "session-integration-" + uuid4().hex
         self.intent_config = get_intent_config(self.fixture.intent_id)
         self.optimizer = None
         self.pending = None
+        self._retired_notice = False
         self.retirements = []
         self.preparations, self.solves, self.dispatches, self.cancellations = [], [], [], []
         self.messages, self.events = {}, []
@@ -45,7 +47,7 @@ class OfflineLoop:
         self._seen_plant = self._seen_gate = self._seen_lifecycle = 0
         self.u = (0., 0.)
         self.initial_joints = initial_joints
-        self.lifecycle = LifecycleCoordinator(self._factory, session_id=session_id, worker_canceller=self)
+        self.lifecycle = LifecycleCoordinator(self._factory, session_id=self.session_id, worker_canceller=self)
         self.capture()
 
     def _factory(self, session_id):
@@ -59,7 +61,8 @@ class OfflineLoop:
             clock_ns=self.clock, clock_id=self.clock.clock_id, initial_joints=self.initial_joints)
         self.coordinator = SnapshotCoordinator(self.store, clock_ns=self.clock, clock_id=self.clock.clock_id,
             joystick_source_id="offline-joystick", robot_state_source_id=self.plant.source_id, mapping_id=MAPPING)
-        self.gate = CommandGate(self.coordinator, self.plant)
+        self.gate = CommandGate(self.coordinator, self.plant,
+                                estimator_config_id=self.intent_config.estimator_config_id)
         return SessionRuntime(self.store, self.coordinator, self.gate)
 
     def event(self, kind, data):
@@ -77,6 +80,9 @@ class OfflineLoop:
 
     def receive(self, message):
         value = self.lifecycle.on_input(message)
+        if self._retired_notice:
+            self._retired_notice = False
+            self.lifecycle.computation_status(ready=False, reason="worker_retired_on_withdrawal")
         if value is not None:
             self.messages[message.meta.message_id] = message
         self.capture()
@@ -131,6 +137,7 @@ class OfflineLoop:
         if self.pending is not None and not self.pending[0].done() and self.optimizer is not None:
             self.retirements.append(self.optimizer.close())
             self.optimizer = None
+            self._retired_notice = True
 
     def dispatch(self):
         if self.pending is not None:
@@ -198,16 +205,19 @@ class OfflineLoop:
     def step(self, *, u=None, release=False, feedback=True, deliver=True):
         """Same-time withdrawal, plant, feedback/input, results, watchdogs."""
         self.clock.now += PLANT_TICK_NS
-        if release:
+        released = release or (u is not None and not any(u))
+        if released:
             self.input((0., 0.))
         try:
             self.plant.advance()
         except ControllerError:
+            if self.plant.status.fault is None:
+                raise  # Scheduling/clock misuse must not look like a valid tick.
             self.lifecycle.controller_status(**asdict(self.plant.status))
         self.capture()
         if feedback:
             self.feedback()
-        if u is not None and not release:
+        if u is not None and not released:
             self.input(u)
         delivered = self.poll(deliver=deliver)
         self.lifecycle.tick()
@@ -231,8 +241,10 @@ class OfflineLoop:
         return self.wait()
 
     def capture(self):
-        # Preserve causal append order across components. Typed events serve
-        # common inspection; complete dataclass exports are retained separately.
+        # Flush after each serialized host operation, preserving each component's
+        # append order. Same-time entries are grouped plant, gate, lifecycle;
+        # these are completion records, not a total order of internal mutations.
+        # Full dataclass exports retain each original index and action sequence.
         for e in self.plant.events[self._seen_plant:]:
             rid = e.target.result.payload.result_id if e.target else None
             kind = "controller_observation" if e.operation in ("advance", "sample") else "controller_request"

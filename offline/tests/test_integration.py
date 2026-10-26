@@ -63,7 +63,8 @@ def test_normal_loop_history_and_independent_feedback(tmp_path):
             assert source.previous_applied.acceptance == previous[2].proposal
             assert source.snapshot.previous_applied_command_id == previous[2].proposal.applied_command_id
             assert source.previous_applied.result.payload == previous[0].payload
-        assert results[2][0].payload.next_tcp_pose.position_xyz[0] <= results[2][3].inputs.resolved.robot_state.payload.tcp_pose.position_xyz[0]
+        assert all(b[3].dispatched_ns - a[3].dispatched_ns == 200_000_000
+                   for a, b in zip(results, results[1:]))
         apply = next(e for e in loop.plant.events if e.operation == "apply")
         assert apply.joints_before == apply.joints_after
         steps = [e for e in loop.plant.events if e.operation == "advance" and e.joints_before != e.joints_after]
@@ -273,3 +274,28 @@ def test_real_run_archive_and_fresh_process_replay(tmp_path):
     (tmp_path / "integration-replay.json").write_text(replay.stdout)
     assert replay.returncode == 0, replay.stdout + replay.stderr
     assert loaded.registry().resolve_snapshot(loop.dispatches[-1].inputs.snapshot.snapshot_id)
+
+
+@pytest.mark.parametrize("release_kwargs", [{"u": (0., 0.)}, {"release": True}])
+def test_neutral_step_cancels_before_plant_advancement(loop, release_kwargs):
+    move(loop.cycle())
+    joints = loop.plant.sample().payload.joint_positions_rad
+    epoch = loop.lifecycle.control_epoch
+    loop.step(**release_kwargs)
+    assert loop.plant.sample().payload.joint_positions_rad == joints
+    assert loop.plant.target is None and loop.lifecycle.state is S.PAUSED
+    assert loop.lifecycle.control_epoch == epoch + 1
+
+
+def test_new_loop_has_fresh_session_and_rejects_prior_session_work():
+    with OfflineLoop() as previous:
+        previous.initialize()
+        old = move(previous.cycle())
+    with OfflineLoop() as current:
+        assert current.session_id != previous.session_id
+        current.initialize()
+        fresh = move(current.cycle())
+        target = current.plant.target
+        decision = current.lifecycle.submit_result(old[0], weights=old[1])
+        assert decision.disposition == "discarded" and not decision.actions
+        assert current.plant.target is target

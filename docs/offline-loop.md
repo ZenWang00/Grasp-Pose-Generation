@@ -24,7 +24,7 @@ python3.12 -m venv .venv-offline
 ```
 
 One command performs validation/activation, neutral then fresh engagement,
-three asynchronous fusion/optimization cycles including reversal, local gate
+three asynchronous fusion/optimization cycles at the 0.2 s control period, local gate
 acceptance, independent plant evolution, release, immutable archival and
 numerical replay in a fresh process:
 
@@ -79,7 +79,11 @@ cannot cancel a newer target. Reusing a retired worker requires preparation
 while disabled. Ordinary release reuses valid context; context invalidation
 requires activation again; FAULT requires healthy status, explicit rearm,
 initialization and fresh engagement. One `OfflineLoop` represents one session;
-create another instance/archive for session or clock restart.
+create another instance/archive for session or clock restart. Each instance uses
+a fresh session UUID by default. Same-time archive completion records retain
+each component's append order, grouped plant, gate, lifecycle after each host
+operation; they do not assert a total order of internal mutations. Original
+component indices and withdrawal action sequences remain in the archive.
 
 ## Acceptance evidence
 
@@ -115,6 +119,11 @@ substitutes for it. P08 establishes only synthetic joint-feedback provenance;
 real sensor/adapter provenance and hardware FK/TF comparison remain required.
 Actual tracking, physical stopping, transport behavior and comparative research
 benefits remain outside this phase.
+
+Reversal has its own analytical integration oracle. A reversal proposal can
+correctly fail the live gate if the previous target moves the plant far enough
+during the solve; the gate never relaxes its fresh-state step bound to match a
+pinned-state solver result. The normal CLI schedule uses constant right input.
 
 The default loop uses two programs (single-relation golden variants use one).
 It does not raise the profile program cap or budgets. The accepted scaling

@@ -16,12 +16,13 @@ def run_normal(loop, cycles=3):
     loop.initialize()
     results = []
     for i in range(cycles):
-        result, weights, decision, dispatch = loop.cycle((1., 0.) if i < 2 else (-1., 0.))
+        result, weights, decision, dispatch = loop.cycle((1., 0.))
         if decision.disposition != "accepted_move":
             raise RuntimeError(f"normal case did not move: {decision.proposal.reason}; {loop.solves[-1].diagnostic}")
         results.append((result, weights, decision, dispatch))
         # Independent plant evolution after receipt; never set state to target.
-        for _ in range(2):
+        next_cycle = dispatch.dispatched_ns + 200_000_000
+        while loop.clock.now < next_cycle:
             loop.step(u=loop.u)
     loop.step(release=True)
     if loop.lifecycle.state is not S.PAUSED or loop.plant.target is not None:
