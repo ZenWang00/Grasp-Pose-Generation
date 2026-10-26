@@ -98,6 +98,9 @@ def export_run(loop, path, software):
     resource("plant-runtime-evidence-v1", {"provenance": loop.plant.provenance,
         "events": [asdict(e) for e in loop.plant.events]})
     resource("lifecycle-runtime-evidence-v1", [r.to_dict() for r in loop.lifecycle.records])
+    resource("callback-timing-evidence-v1", {"scope": "Observed serialized software callback durations, "
+        "including local release/fault-stop submissions; no concurrent adapter contention or hardware bound.",
+        "samples": loop.callback_timings})
     archive = builder.seal()
     digest = archive.write(path)
     return {"path": str(path), "sha256": digest, "payload_sha256": archive.sha256,

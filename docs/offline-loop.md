@@ -102,7 +102,13 @@ The matrix contains each selected test/parameterization, duration, report
 reference and evidence level. Missing/skipped/failed required selectors and
 any failing suite case fail aggregate acceptance. Component fixtures that stub
 numerical validation remain component evidence; `test_integration.py` uses
-real receipts and solver/evaluator processes throughout. Linux CI uploads the
+real receipts and solver/evaluator processes throughout. Per-test `integration-events-*.json` and the run archive retain observed
+`on_input` and `controller_status` wall-clock callback durations, including
+release during a stalled solve and fault-stop submission. These measurements
+cover this serialized runner: artifact operations never overlap another host
+callback. They do not bound contention in future threaded adapters; the
+artifact/coordinator-lock caveat in [lifecycle](lifecycle.md) still applies.
+Linux CI uploads the
 matrix, both JUnit reports, all loop/replay evidence, detailed component traces,
 wheels/checksums, dependencies and exact revisions.
 

@@ -43,6 +43,7 @@ def make_loop(tmp_path):
             "preparations": value.preparations, "solves": [asdict(s) for s in value.solves],
             "dispatches": [asdict(d) for d in value.dispatches],
             "cancellations": value.cancellations, "events": value.events,
+            "callback_timings": value.callback_timings,
             "decisions": [asdict(d) for d in value.gate.decisions]}, indent=2))
 
 
@@ -240,6 +241,8 @@ def test_worker_stall_keeps_release_local(loop):
     loop.step(release=True)
     assert time.monotonic() - started < .1
     assert loop.plant.target is None and loop.lifecycle.state is S.PAUSED
+    assert any(t["operation"] == "on_input" and t["state_before"] == "ACTIVE" and
+               t["state_after"] == "PAUSED" and t["elapsed_wall_ns"] > 0 for t in loop.callback_timings)
     late = loop.wait()
     assert late[0].payload.status == "hold"
     assert late[2].disposition == "discarded"
@@ -271,6 +274,8 @@ def test_context_reinitialization_and_explicit_fault_rearm(loop):
     loop.plant.inject_controller_fault("integration fault")
     loop.feedback()
     assert loop.lifecycle.state is S.FAULT and loop.plant.target is None
+    assert any(t["operation"] == "controller_status" and t["state_before"] == "ACTIVE" and
+               t["state_after"] == "FAULT" and t["elapsed_wall_ns"] > 0 for t in loop.callback_timings)
     loop.plant.clear_fault()
     loop.feedback()
     loop.input((0., 0.))

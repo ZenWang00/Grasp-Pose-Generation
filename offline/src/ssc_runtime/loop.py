@@ -42,6 +42,7 @@ class OfflineLoop:
         self._retired_notice = False
         self.retirements = []
         self.preparations, self.solves, self.dispatches, self.cancellations = [], [], [], []
+        self.callback_timings = []
         self.messages, self.events = {}, []
         self.counters = {}
         self._seen_plant = self._seen_gate = self._seen_lifecycle = 0
@@ -79,12 +80,18 @@ class OfflineLoop:
             policy=NUMERIC_OFFLINE_V1)
 
     def receive(self, message):
+        started = time.perf_counter_ns()
+        before = self.lifecycle.state.value
         value = self.lifecycle.on_input(message)
         if self._retired_notice:
             self._retired_notice = False
             self.lifecycle.computation_status(ready=False, reason="worker_retired_on_withdrawal")
         if value is not None:
             self.messages[message.meta.message_id] = message
+        self.callback_timings.append({"operation": "on_input", "message_type": message.message_type,
+            "message_id": message.meta.message_id, "at_ns": self.clock.now,
+            "elapsed_wall_ns": time.perf_counter_ns() - started,
+            "state_before": before, "state_after": self.lifecycle.state.value})
         self.capture()
         return value
 
@@ -99,9 +106,18 @@ class OfflineLoop:
         message = self.plant.sample()
         if message is not None:
             self.receive(message)
-        self.lifecycle.controller_status(**asdict(self.plant.status))
+        self.report_controller_status()
         self.capture()
         return message
+
+    def report_controller_status(self):
+        started = time.perf_counter_ns()
+        status = asdict(self.plant.status)
+        before = self.lifecycle.state.value
+        self.lifecycle.controller_status(**status)
+        self.callback_timings.append({"operation": "controller_status", "status": status,
+            "at_ns": self.clock.now, "elapsed_wall_ns": time.perf_counter_ns() - started,
+            "state_before": before, "state_after": self.lifecycle.state.value})
 
     def prepare(self):
         if self.lifecycle.state not in (S.UNINITIALIZED, S.READY, S.PAUSED, S.VALIDATING):
@@ -113,6 +129,7 @@ class OfflineLoop:
         bundle = self.store.acquire()
         if bundle is None:
             raise RuntimeError("no activated bundle")
+        self.lifecycle.computation_status(ready=False, reason="worker_preparing")
         report = self.optimizer.prepare(bundle.resolved, motion_disabled=True).result(10)
         self.preparations.append(asdict(report))
         self.lifecycle.computation_status(ready=report.ok, reason=report.code)
@@ -213,7 +230,7 @@ class OfflineLoop:
         except ControllerError:
             if self.plant.status.fault is None:
                 raise  # Scheduling/clock misuse must not look like a valid tick.
-            self.lifecycle.controller_status(**asdict(self.plant.status))
+            self.report_controller_status()
         self.capture()
         if feedback:
             self.feedback()
