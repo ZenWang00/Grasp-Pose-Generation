@@ -1,6 +1,8 @@
 """Public synthetic fixture variants, with fresh identities for changed content."""
 
 import base64
+from collections import Counter
+from copy import deepcopy
 from hashlib import sha256
 from importlib.resources import files
 import json
@@ -9,7 +11,9 @@ from ssc_core import (GeometryRef, HostBindingPolicy, HostNormalization, Program
                       TaskRef, UnitReview, feature_definition_digest, program_content_digest)
 from .activation import ActivationRequest, ActiveBundleStore
 
-CORE_REVISION = "9ce2d2467f10ca6d82e7672a3158aa6f584ebfde"
+CORE_REVISION = "6aaf178bc3f07735e298c9b8c05b1b6e2e672948"
+SOLVER_ID = "solver-slsqp-batch-v2"
+PROFILE_ID = "offline-reference-batch-v2"
 MAPPING = "integration-xy-v1"
 # A real one-pixel PNG and float32 zero depth. Metadata only, never perception.
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC")
@@ -18,7 +22,7 @@ VARIANTS = ("default", "joystick-only", "positive-approach", "within-tolerance",
 
 
 class Fixture:
-    def __init__(self, variant="default"):
+    def __init__(self, variant="default", *, program_count=None):
         if variant not in VARIANTS:
             raise ValueError(f"unknown fixture: {variant}")
         self.variant = variant
@@ -27,6 +31,7 @@ class Fixture:
         self.programs = self.catalog["constraint_programs"]
         config, geometry, semantic, observation = (self.records[n] for n in
             ("SessionConfig", "SceneGeometry", "SemanticContext", "SceneObservation"))
+        config["config_id"] = "config-offline-batch-v2"
         suffix = "-integration-" + variant + "-v1"
         observation["observation_id"] += suffix
         observation["calibration_id"] += suffix
@@ -41,8 +46,8 @@ class Fixture:
         self.assets = {"integration-rgb-v1": (PNG, "image/png"),
                        "integration-depth-v1": (bytes(4), "application/octet-stream")}
         if variant == "joystick-only":
-            config["config_id"] = "config-offline-alpha0-v1"
-        self.intent_id = "intent-linear-alpha0-v1" if variant == "joystick-only" else "intent-linear-v1"
+            config["config_id"] = "config-offline-batch-alpha0-v2"
+        self.intent_id = "intent-linear-batch-alpha0-v2" if variant == "joystick-only" else "intent-linear-batch-v2"
         if variant in ("positive-approach", "within-tolerance", "computation-error", "workspace-face", "excluded-sphere"):
             self.programs = self.programs[:1]
             geometry["objects"] = geometry["objects"][:1]
@@ -62,6 +67,17 @@ class Fixture:
         for p in self.programs:
             p["program_id"] += suffix
             p["source_sha256"] = sha256(p["source_code"].encode()).hexdigest()
+        self.binding_weights = {}
+        if program_count is not None:
+            if type(program_count) is not int or not 2 <= program_count <= 16 or variant != "default":
+                raise ValueError("program_count requires the default fixture and an integer in 2-16")
+            originals = self.programs
+            self.programs = [deepcopy(originals[i % 2]) for i in range(program_count)]
+            counts = Counter(p["object_id"] for p in self.programs)
+            for i, p in enumerate(self.programs):
+                p["program_id"] += f"-batch-{program_count}-{i}"
+                self.binding_weights[p["program_id"]] = 1. / counts[p["object_id"]]
+            semantic["semantic_id"] += f"-batch-{program_count}"
         semantic["program_refs"] = [{"program_id": p["program_id"], "source_sha256": p["source_sha256"]}
                                     for p in self.programs]
         self.validation = []
@@ -74,7 +90,8 @@ class Fixture:
             p["output_unit"], tuple(v["unit"] for v in p["parameters"]), "offline fixture formula review",
             "Distance minus tolerance in metres; division variant divides two metre quantities.") for p in self.programs)
         policies = tuple(HostBindingPolicy(config["config_id"], p["program_id"],
-            HostNormalization(p["output_unit"], 1. if p["output_unit"] == "dimensionless" else .01)) for p in self.programs)
+            HostNormalization(p["output_unit"], 1. if p["output_unit"] == "dimensionless" else .01,
+                              self.binding_weights.get(p["program_id"], 1.))) for p in self.programs)
         store = ActiveBundleStore(session_id, unit_reviews=reviews, binding_policies=policies)
         bindings = []
         with store.artifacts() as (registry, validator):
@@ -86,7 +103,7 @@ class Fixture:
                 self.validation.append(report)
                 if report.receipt.status != "accepted":
                     raise RuntimeError(f"fixture validation failed: {report.receipt.diagnostics}")
-                binding = validator.create_binding("host-" + p["program_id"], receipt_id=report.receipt.receipt_id,
+                binding = validator.create_binding("host-batch-v2-" + p["program_id"], receipt_id=report.receipt.receipt_id,
                     geometry_ref=GeometryRef(geometry["geometry_id"], geometry["revision"]), config_id=config["config_id"])
                 self.registered.extend((("ProgramValidationReceipt", report.receipt), ("ProgramExecutionBinding", binding)))
                 bindings.append(binding.binding_id)

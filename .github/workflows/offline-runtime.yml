@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ZenWang00/semantic-shared-control
-          ref: 9ce2d2467f10ca6d82e7672a3158aa6f584ebfde
+          ref: 6aaf178bc3f07735e298c9b8c05b1b6e2e672948
           path: shared-core
       - uses: actions/setup-python@v5
         with:
@@ -38,8 +38,8 @@ jobs:
           python -m pip wheel --no-deps --wheel-dir dist ./shared-core
           python -m pip wheel --no-deps --wheel-dir dist ./offline
           python -m venv .venv-offline
-          .venv-offline/bin/python -m pip install 'dist/ssc_core-0.9.0-py3-none-any.whl[test]'
-          .venv-offline/bin/python -m pip install --no-deps dist/ssc_runtime-0.6.0-py3-none-any.whl
+          .venv-offline/bin/python -m pip install 'dist/ssc_core-0.10.0-py3-none-any.whl[test]'
+          .venv-offline/bin/python -m pip install --no-deps dist/ssc_runtime-0.7.0-py3-none-any.whl
       - name: Test installed consumer and real producer receipts
         run: |
           .venv-offline/bin/python -m pytest offline/tests --basetemp=test-evidence --junitxml=test-results.xml
@@ -55,9 +55,13 @@ jobs:
           .venv-offline/bin/python -m pytest shared-core/tests/shared_control --junitxml=server-test-results.xml
       - name: Complete loop and fresh-process archive replay
         run: |
-          .venv-offline/bin/python -I -m ssc_runtime.runner --core-wheel dist/ssc_core-0.9.0-py3-none-any.whl --runtime-wheel dist/ssc_runtime-0.6.0-py3-none-any.whl --runtime-revision "$(git rev-parse HEAD)" --output integration-evidence
+          .venv-offline/bin/python -I -m ssc_runtime.runner --core-wheel dist/ssc_core-0.10.0-py3-none-any.whl --runtime-wheel dist/ssc_runtime-0.7.0-py3-none-any.whl --runtime-revision "$(git rev-parse HEAD)" --output integration-evidence
           cmp offline/src/ssc_runtime/data/offline-reference-v1.md shared-core/docs/wiki/Offline-Reference-Profile.md
+          cmp offline/src/ssc_runtime/data/offline-reference-batch-v2.md shared-core/docs/wiki/Offline-Batch-Profile.md
           cmp offline/src/ssc_runtime/data/bottle_cup_offline_v1.json shared-core/tests/fixtures/shared_control/bottle_cup_offline_v1.json
+      - name: Run all sixteen programs through the live gate and replay
+        run: |
+          .venv-offline/bin/python -I -m ssc_runtime.runner --core-wheel dist/ssc_core-0.10.0-py3-none-any.whl --runtime-wheel dist/ssc_runtime-0.7.0-py3-none-any.whl --runtime-revision "$(git rev-parse HEAD)" --program-count 16 --output integration-16-evidence
       - name: Join all S P G C acceptance obligations to executed evidence
         if: ${{ !cancelled() }}
         run: |
@@ -73,6 +77,7 @@ jobs:
             server-test-results.xml
             acceptance-matrix.json
             integration-evidence/**
+            integration-16-evidence/**
             test-evidence/**/integration-*.json
             test-evidence/**/concurrency-trace.json
             test-evidence/**/snapshot-trace.json

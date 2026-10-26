@@ -1,9 +1,11 @@
 # Complete phase-one offline loop
 
-P1-16 / [issue #6](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/6)
-connects `ssc-runtime==0.6.0` to accepted `ssc-core==0.9.0` at
-`9ce2d2467f10ca6d82e7672a3158aa6f584ebfde`. Schema 1.0,
-geometry-residual-v1 and all reference profile identities stay unchanged.
+P1-17 / [server issue #30](https://github.com/ZenWang00/semantic-shared-control/issues/30)
+upgrades the P1-16 loop to `ssc-runtime==0.7.0` and `ssc-core==0.10.0` at
+`6aaf178bc3f07735e298c9b8c05b1b6e2e672948`. It explicitly selects
+`solver-slsqp-batch-v2`, `offline-reference-batch-v2` and new session configuration
+IDs. Schema 1.0 and geometry-residual-v1 remain unchanged; the original base
+profile and model/host resources retain their frozen bytes and IDs.
 This is software simulation and numerical replay, not hardware or research evidence.
 
 ## Reproduce the installed version pair
@@ -14,12 +16,12 @@ From a clean checkout of this repository at the revision to test:
 
 ```sh
 git clone https://github.com/ZenWang00/semantic-shared-control.git shared-core
-git -C shared-core checkout 9ce2d2467f10ca6d82e7672a3158aa6f584ebfde
+git -C shared-core checkout 6aaf178bc3f07735e298c9b8c05b1b6e2e672948
 python3.12 -m pip wheel --no-deps --wheel-dir dist ./shared-core
 python3.12 -m pip wheel --no-deps --wheel-dir dist ./offline
 python3.12 -m venv .venv-offline
-.venv-offline/bin/python -m pip install 'dist/ssc_core-0.9.0-py3-none-any.whl[test]'
-.venv-offline/bin/python -m pip install --no-deps dist/ssc_runtime-0.6.0-py3-none-any.whl
+.venv-offline/bin/python -m pip install 'dist/ssc_core-0.10.0-py3-none-any.whl[test]'
+.venv-offline/bin/python -m pip install --no-deps dist/ssc_runtime-0.7.0-py3-none-any.whl
 .venv-offline/bin/python -m pip check
 ```
 
@@ -30,8 +32,8 @@ numerical replay in a fresh process:
 
 ```sh
 .venv-offline/bin/python -I -m ssc_runtime.runner \
-  --core-wheel dist/ssc_core-0.9.0-py3-none-any.whl \
-  --runtime-wheel dist/ssc_runtime-0.6.0-py3-none-any.whl \
+  --core-wheel dist/ssc_core-0.10.0-py3-none-any.whl \
+  --runtime-wheel dist/ssc_runtime-0.7.0-py3-none-any.whl \
   --runtime-revision "$(git rev-parse HEAD)" \
   --output integration-evidence
 ```
@@ -54,6 +56,10 @@ artifact/feature/program IDs. The packaged profile is a byte-for-byte frozen
 evidence resource from the pinned server revision; the server Wiki remains
 the sole authoring source.
 
+`--program-count 16` exercises the full program cap with the default scene.
+It accepts counts 2–16, gives replicated relations distinct program identities,
+and normalizes binding weights per object to preserve total assistance.
+
 ## Runtime boundaries and clocks
 
 `OfflineLoop` owns the serialized `LifecycleCoordinator`, `ActiveBundleStore`,
@@ -67,7 +73,7 @@ The test clock begins at 10 s and advances explicitly by 20 ms. The simulation
 pump waits 20 ms between ticks while polling an asynchronous solve. This is a
 controlled simulation schedule, not a measurement of real-time control rate.
 The solver independently enforces the unchanged 150 ms real monotonic budget
-and 10 ms per evaluator call. Dispatch maps its original local deadline to a
+and 10 ms for the complete candidate batch. Dispatch maps its original local deadline to a
 real monotonic deadline once. Timestamps on returned messages never extend it.
 
 Each tick handles same-time release first, then plant advancement, sampled
@@ -132,7 +138,9 @@ during the solve; the gate never relaxes its fresh-state step bound to match a
 pinned-state solver result. The normal CLI schedule uses constant right input.
 
 The default loop uses two programs (single-relation golden variants use one).
-It does not raise the profile program cap or budgets. The accepted scaling
-limitation remains [semantic-shared-control #30](https://github.com/ZenWang00/semantic-shared-control/issues/30).
+CI also checks a sixteen-program loop through the live gate, archival and fresh
+replay. The producer retains all 640 scaling samples across counts 1–16;
+the old v1 solver's measured limitation remains in its historical evidence.
+The batch profile does not raise the program cap or budgets.
 Loaded hosts may time out even a small solve; timeout remains a targetless hold.
 CI evidence identifies its actual Linux platform, not the local reference VM.
