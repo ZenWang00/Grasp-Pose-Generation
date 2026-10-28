@@ -1,12 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, replace
 import json
-import sys
 from threading import Barrier, Event
 
 import pytest
 
-from ssc_core import GeometryRef, ProgramRef, TaskRef, to_dict
+from ssc_core import GeometryRef, TaskRef, to_dict
 from ssc_runtime import ActivationOutcome, ActiveBundleStore
 
 
@@ -22,7 +21,7 @@ def activate(store, request):
 
 
 def register(store, name, record):
-    with store.artifacts() as (registry, _):
+    with store.artifacts() as registry:
         return registry.register_record(name, record, session_id=store.session_id)
 
 
@@ -41,10 +40,9 @@ def test_complete_bundle_and_immutable_retention(build):
     assert context.semantic.semantic_id == request.semantic_id
     assert old.observation.observation_id == request.observation_id
     assert old.semantic_observation.observation_id == context.semantic.observation_id
-    assert tuple(r.receipt for r in reports) == context.receipts
-    assert tuple(p.program.source_sha256 for p in context.programs) == tuple(r.source_sha256 for r in request.program_refs)
-    assert all(p.program.function_api_version == "geometry-residual-v1" for p in context.programs)
-    assert all(b.normalization_scale == .01 and b.weight == 1 for b in context.execution_bindings)
+    assert context.candidate_set.candidate_set_id == request.candidate_set_id
+    assert len(context.candidates) == 2
+    assert all(len(point.position_xyz) == 3 for point in context.candidates)
     with pytest.raises(FrozenInstanceError):
         context.geometry.revision = 99
     with pytest.raises(TypeError):
@@ -66,9 +64,7 @@ def test_complete_bundle_and_immutable_retention(build):
     ("scene_id", "foreign-scene", "context_mismatch"),
     ("observation_id", "foreign-observation", "context_mismatch"),
     ("feature_set_id", "foreign-features", "context_mismatch"),
-    ("program_refs", (), "program_coverage"),
-    ("execution_binding_refs", (), "binding_coverage"),
-    ("execution_binding_refs", ("missing-binding",), "missing_reference"),
+    ("candidate_set_id", "absent", "missing_reference"),
 ])
 def test_rejection_has_diagnostic_and_no_fallback(build, field, value, code):
     store, request, _, _ = build()
@@ -109,23 +105,17 @@ def test_incompatible_semantic_context(build, field):
     assert failed.status == "rejected" and failed.code in ("incompatible_reference", "missing_reference")
 
 
-@pytest.mark.parametrize("field,value", [("object_id", "missing-object"),
-    ("keypoint_bindings", ["missing-keypoint"]), ("axis_bindings", ["missing-axis"])])
-def test_missing_program_feature_identity(build, field, value):
+@pytest.mark.parametrize("field,value", [("task_revision", 99), ("scene_id", "foreign"),
+    ("feature_set_id", "foreign"), ("observation_id", "foreign"), ("frame_id", "foreign")])
+def test_incompatible_candidate_context(build, field, value):
     store, request, records, _ = build()
-    with store.artifacts() as (registry, _):
-        program = to_dict(registry.get_record("ConstraintProgram", request.program_refs[0].program_id,
-                                              session_id=store.session_id))
-    program.update(program_id="missing-feature-program", **{field: value})
-    register(store, "ConstraintProgram", program)
-    semantic = records["SemanticContext"]
-    semantic["semantic_id"] = "missing-feature-semantics"
-    semantic["program_refs"][0]["program_id"] = program["program_id"]
-    register(store, "SemanticContext", semantic)
-    requested = replace(request, semantic_id=semantic["semantic_id"], program_refs=(
-        ProgramRef(program["program_id"], program["source_sha256"]), *request.program_refs[1:]))
-    failed = store.prepare(store.begin(requested))
-    assert failed.code == "missing_reference" and store.acquire() is None
+    candidates = records["CandidateSet"]
+    candidates.update(candidate_set_id="changed-candidates", **{field: value})
+    register(store, "CandidateSet", candidates)
+    failed = store.prepare(store.begin(replace(request, candidate_set_id="changed-candidates")))
+    assert failed.status == "rejected"
+    assert failed.code in ("incompatible_reference", "missing_reference")
+    assert store.acquire() is None
 
 
 def test_semantic_capture_can_precede_geometry_capture_in_same_scene(build):
@@ -136,69 +126,26 @@ def test_semantic_capture_can_precede_geometry_capture_in_same_scene(build):
     geometry = records["SceneGeometry"]
     geometry.update(geometry_id="later-capture-geometry", observation_id=observation["observation_id"])
     register(store, "SceneGeometry", geometry)
-    active = activate(store, replace(request, observation_id=observation["observation_id"],
+    candidates = records["CandidateSet"]
+    candidates.update(candidate_set_id="later-capture-candidates", observation_id=observation["observation_id"])
+    register(store, "CandidateSet", candidates)
+    active = activate(store, replace(request, candidate_set_id="later-capture-candidates", observation_id=observation["observation_id"],
                                       geometry_ref=GeometryRef(geometry["geometry_id"], geometry["revision"])))
     assert active.observation.observation_id != active.semantic_observation.observation_id
     assert active.observation.scene_id == active.semantic_observation.scene_id
 
 
-@pytest.mark.parametrize("change", ["imported", "rejected", "hash", "feature", "policy", "binding_config"])
-def test_receipt_and_binding_boundaries(build, change):
-    store, request, _, reports = build()
-    report = reports[0]
-    with store.artifacts() as (registry, _):
-        binding = to_dict(registry.get_record("ProgramExecutionBinding", request.execution_binding_refs[0],
-                                             session_id=store.session_id))
-    binding["binding_id"] = "changed-binding"
-    if change == "binding_config":
-        binding["config_id"] = "other-config"
-    else:
-        receipt = to_dict(report.receipt)
-        receipt["receipt_id"] = "imported-receipt"
-        if change == "rejected":
-            receipt.update(status="rejected", diagnostics=["test rejection"])
-        if change == "hash": receipt["source_sha256"] = "0" * 64
-        if change == "feature": receipt["feature_set_id"] = "foreign"
-        if change == "policy": receipt["validator_policy_version"] = "foreign"
-        register(store, "ProgramValidationReceipt", receipt)
-        binding["validation_receipt_id"] = receipt["receipt_id"]
-    register(store, "ProgramExecutionBinding", binding)
-    request = replace(request, execution_binding_refs=(binding["binding_id"], *request.execution_binding_refs[1:]))
-    failed = store.prepare(store.begin(request))
-    assert failed.status == "rejected"
-    assert failed.code == ("untrusted_receipt" if change == "imported" else "incompatible_reference")
-    assert store.acquire() is None
-
-
-def test_wrong_host_normalization_and_missing_binding(build):
-    store, request, records, _ = build(issue=False)
-    with store.artifacts() as (registry, validator):
-        for index, ref in enumerate(request.program_refs):
-            p = registry.get_record("ConstraintProgram", ref.program_id, session_id=store.session_id)
-            report = validator.validate(p, geometry=records["SceneGeometry"], config_id=request.config_id,
-                                        motion_disabled=True)
-            register(store, "ProgramExecutionBinding", dict(binding_id=f"binding-{index}", program_id=p.program_id,
-                config_id=request.config_id, normalization_scale=.02, weight=1,
-                validation_receipt_id=report.receipt.receipt_id))
-    request = replace(request, execution_binding_refs=("binding-0", "binding-1"))
-    failed = store.prepare(store.begin(request))
-    assert failed.code == "normalization_mismatch" and store.acquire() is None
-
-
-def test_new_store_cannot_restore_archived_trust(build):
-    store, request, _, _ = build()
-    active = activate(store, request)
-    restored = ActiveBundleStore(store.session_id, unit_reviews=(), binding_policies=())
-    r = active.resolved
-    for name, values in (
-        ("SessionConfig", (r.configuration,)), ("TaskContext", (r.task,)),
-        ("SceneObservation", (active.observation,)), ("SceneGeometry", (r.geometry,)),
-        ("SemanticContext", (r.semantic,)), ("ConstraintProgram", tuple(p.program for p in r.programs)),
-        ("ProgramValidationReceipt", r.receipts), ("ProgramExecutionBinding", r.execution_bindings)):
-        for value in values: register(restored, name, value)
-    failed = restored.prepare(restored.begin(request))
-    assert failed.code == "untrusted_receipt"
-    assert restored.prepare(active.attempt).status == "superseded"
+def test_registered_candidates_cannot_mutate_active_bundle(build):
+    store, request, records, _ = build()
+    old = activate(store, request)
+    candidates = records["CandidateSet"]
+    candidates["candidate_set_id"] = "replacement-candidates"
+    candidates["candidates"][0]["position_xyz"][2] += .02
+    register(store, "CandidateSet", candidates)
+    assert store.acquire() is old
+    new = activate(store, replace(request, candidate_set_id="replacement-candidates"))
+    assert new.resolved.candidates != old.resolved.candidates
+    assert not store.is_current(old)
 
 
 def test_coordinate_revision_requires_paused_replacement(build):
@@ -212,7 +159,7 @@ def test_coordinate_revision_requires_paused_replacement(build):
     assert store.acquire() is old
     new = activate(store, replace(request, geometry_ref=GeometryRef(geometry["geometry_id"], 2)))
     assert new.resolved.geometry.revision == 2 and old.resolved.geometry.revision == 1
-    assert new.resolved.receipts == old.resolved.receipts
+    assert new.resolved.candidate_set == old.resolved.candidate_set
     assert not store.is_current(old)
 
 
@@ -268,7 +215,7 @@ def test_concurrent_completion_and_atomic_readers(build, monkeypatch, tmp_path):
                     value = store.acquire()
                     assert value is None or value is prepared.bundle
                     if value:
-                        assert len(value.resolved.programs) == len(value.resolved.receipts) == 2
+                        assert len(value.resolved.candidates) == 2
                         assert value.resolved.semantic.task_revision == value.resolved.task.revision
                     seen.append(None if value is None else value.activation_id)
                 return seen
@@ -327,13 +274,3 @@ def test_unexpected_host_error_is_visible_and_retires_attempt(build, monkeypatch
         store.prepare(attempt)
     assert store.acquire() is None
     assert store.prepare(attempt).status == "superseded"
-
-
-@pytest.mark.skipif(sys.platform != "linux", reason="real receipt workers require Linux resource enforcement")
-def test_real_worker_receipts_to_complete_activation(build):
-    store, request, _, reports = build(stub=False)
-    assert len(reports) == 2
-    assert all(r.numerical.accepted and r.numerical.cleanup.reaped for r in reports)
-    assert all(len(r.numerical.probes) == 50 for r in reports)
-    active = activate(store, request)
-    assert active.resolved.receipts == tuple(r.receipt for r in reports)

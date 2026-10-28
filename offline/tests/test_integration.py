@@ -1,4 +1,4 @@
-"""Installed version-pair integration: real receipts, fusion, solver, gate and plant.
+"""Installed version-pair integration: candidate selection, fusion, solver, gate and plant.
 
 Linux only. No mocked numeric success and no profile deadline extensions.
 Component fault/structure coverage is joined by the acceptance-matrix generator.
@@ -15,7 +15,7 @@ import sys
 import time
 
 import pytest
-from ssc_core import NUMERIC_OFFLINE_V1, Pose, parse_message, to_dict
+from ssc_core import NUMERIC_CANDIDATES_V2, Pose, parse_message, to_dict
 from ssc_core.archive import RunArchive, environment
 from ssc_runtime import LifecycleState as S, proxy_inverse
 from ssc_runtime.evidence import export_run
@@ -64,15 +64,15 @@ def alter(message, **changes):
     data = to_dict(message)
     data["payload"].update(changes)
     data["meta"]["message_id"] += "-injected"
-    return parse_message(data, policy=NUMERIC_OFFLINE_V1)
+    return parse_message(data, policy=NUMERIC_CANDIDATES_V2)
 
 
 def held_result(loop):
     loop.input()
     dispatch = loop.dispatch()
-    result, weights, _, _ = loop.wait(deliver=False)
+    result, selection, _, _ = loop.wait(deliver=False)
     assert result.payload.status == "move", loop.solves[-1].diagnostic
-    return result, weights, dispatch
+    return result, selection, dispatch
 
 
 def test_normal_loop_history_and_independent_feedback(tmp_path, make_loop):
@@ -99,51 +99,68 @@ def test_normal_loop_history_and_independent_feedback(tmp_path, make_loop):
             "plant": [asdict(e) for e in loop.plant.events], "lifecycle": [r.to_dict() for r in loop.lifecycle.records]}, indent=2))
 
 
-@pytest.mark.parametrize("variant,dx,raw,penalty", [
-    ("joystick-only", 10 * .01 / 11, None, None),
-    ("positive-approach", 15 * .01 / 16, .01 / 16, 1 / 256),
-    ("within-tolerance", 10 * .01 / 11, None, 0.),
+@pytest.mark.parametrize("variant,dx", [
+    ("joystick-only", 10 * .01 / 11), ("default", 15 * .01 / 16),
 ])
-def test_profile_golden_movement(variant, dx, raw, penalty, make_loop, tmp_path):
+def test_profile_golden_movement(variant, dx, make_loop, tmp_path):
     with make_loop(variant) as loop:
         loop.initialize()
-        result, weights, decision, dispatch = move(loop.cycle())
-        assert result.payload.next_tcp_pose.position_xyz[0] - .4 == pytest.approx(dx, abs=1e-6)
+        result, selection, _, dispatch = move(loop.cycle())
+        pose = result.payload.next_tcp_pose
+        assert pose.position_xyz[0] - .4 == pytest.approx(dx, abs=1e-6)
+        assert pose.position_xyz[1:] == pytest.approx((0., .3), abs=1e-6)
+        evaluation = result.payload.candidate_evaluation
+        assert evaluation.distance_m == pytest.approx(.41 - pose.position_xyz[0], abs=1e-9)
+        assert evaluation.penalty == pytest.approx((evaluation.distance_m / .01) ** 2)
         if variant == "joystick-only":
-            assert weights.payload.assistance_strength == 0
-            assert result.payload.constraint_evaluations  # still evaluated at alpha zero
-        if raw is not None:
-            assert not result.payload.constraints_satisfied and result.payload.evaluation_valid
-            assert result.payload.constraint_evaluations[0].raw_g == pytest.approx(raw, abs=1e-6)
-        if penalty is not None:
-            assert result.payload.constraint_evaluations[0].penalty == pytest.approx(penalty, abs=1e-5)
-        if variant == "within-tolerance":
-            assert result.payload.constraint_evaluations[0].raw_g < 0
+            assert selection.payload.assistance_strength == 0
+            assert pose.position_xyz[2] == dispatch.inputs.robot_state.message.payload.tcp_pose.position_xyz[2]
         (tmp_path / "integration-golden.json").write_text(json.dumps({
-            "variant": variant, "expected": {"dx_m": dx, "raw_g": raw, "penalty": penalty},
-            "actual": {"dx_m": result.payload.next_tcp_pose.position_xyz[0] - .4,
-                "evaluations": [to_dict(v) for v in result.payload.constraint_evaluations]},
-            "position_atol_m": 1e-6, "penalty_atol": 1e-5, "numerical_oracle_passed": True}, indent=2))
-        # A target is a request, not a measurement at that target.
-        assert loop.plant.sample().payload.tcp_pose != result.payload.next_tcp_pose
+            "variant": variant, "expected_dx_m": dx, "target": to_dict(pose),
+            "evaluation": to_dict(evaluation), "position_atol_m": 1e-6}, indent=2))
+        assert loop.plant.sample().payload.tcp_pose != pose
 
 
-def test_current_direction_weights_and_accepted_smoothing(loop):
+@pytest.mark.parametrize("variant,sign", [("higher-target", 1), ("equal-target", 0), ("lower-target", -1)])
+def test_target_height_assistance_preserves_measured_orientation(make_loop, variant, sign):
+    joints = (0., 0., 0., .1, -.2, .15)
+    with make_loop(variant, initial_joints=joints) as loop:
+        loop.initialize()
+        result, selection, _, dispatch = move(loop.cycle())
+        pose, measured = result.payload.next_tcp_pose, dispatch.inputs.robot_state.message.payload.tcp_pose
+        dz = pose.position_xyz[2] - measured.position_xyz[2]
+        assert abs(dz) < 1e-8 if sign == 0 else sign * dz > 1e-5
+        assert pose.quaternion_xyzw == measured.quaternion_xyzw
+        assert result.payload.candidate_evaluation.candidate_id == selection.payload.selected_candidate_id
+
+
+def test_same_object_alternatives_select_one_target(make_loop):
+    with make_loop("multiple-alternatives") as loop:
+        loop.initialize()
+        result, selection, _, _ = move(loop.cycle())
+        points = loop.store.acquire().resolved.candidates
+        assert len({p.object_id for p in points}) == 1
+        assert selection.payload.selected_candidate_id in {p.candidate_id for p in points}
+        # Symmetric heights would cancel under averaging. One selected point moves z.
+        assert abs(result.payload.next_tcp_pose.position_xyz[2] - .3) > 1e-5
+
+
+def test_current_direction_selection_and_accepted_smoothing(loop):
     right = move(loop.cycle())
-    weights = {w.object_id: w.weight for w in right[1].payload.weights}
-    assert weights["object-bottle-offline-v1"] == pytest.approx(3 / 4)
-    loop.step(u=(1., 0.))
+    assert right[1].payload.selected_candidate_id == "candidate-bottle-v2"
+    # Match the normal runner's control-period cadence. The early-reversal
+    # stale-endpoint rejection is tested separately against fresh feedback.
+    next_cycle = right[3].dispatched_ns + round(right[3].inputs.snapshot.dt_s * 1e9)
+    while loop.clock.now < next_cycle:
+        loop.step(u=(1., 0.))
     left = move(loop.cycle((-1., 0.)))
-    weights = {w.object_id: w.weight for w in left[1].payload.weights}
-    assert weights["object-cup-offline-v1"] == pytest.approx(11 / 16)
+    assert left[1].payload.selected_candidate_id == "candidate-cup-v2"
+    assert left[3].inputs.snapshot.previous_selection_id == right[1].payload.selection_id
     source = left[3].inputs.resolved.robot_state.payload.tcp_pose.position_xyz[0]
     old_source = right[3].inputs.resolved.robot_state.payload.tcp_pose.position_xyz[0]
     previous = (right[0].payload.next_tcp_pose.position_xyz[0] - old_source) / .01
-    desired = sum(weights[obj] * (target - source) / .01 for obj, target in
-                  (("object-bottle-offline-v1", .41), ("object-cup-offline-v1", .39)))
-    expected = (-1 + .1 * previous + .5 * desired) / 1.6
+    expected = max(-1., min(0., (-1 + .1 * previous + .5 * (.39 - source) / .01) / 1.6))
     assert left[0].payload.next_tcp_pose.position_xyz[0] - source == pytest.approx(.01 * expected, abs=1e-6)
-    assert expected < 0
 
 
 def test_duplicate_forged_and_old_results_cannot_cancel_new_target(loop):
@@ -153,7 +170,7 @@ def test_duplicate_forged_and_old_results_cannot_cancel_new_target(loop):
     target = loop.plant.target
     count = len(loop.plant.events)
     for message in (first[0], newer[0], alter(first[0], command_seq=99999)):
-        decision = loop.lifecycle.submit_result(message, weights=first[1] if message != newer[0] else newer[1])
+        decision = loop.lifecycle.submit_result(message, selection=first[1] if message != newer[0] else newer[1])
         assert decision.disposition == "discarded"
         assert not decision.actions
         assert loop.plant.target is target
@@ -163,13 +180,14 @@ def test_duplicate_forged_and_old_results_cannot_cancel_new_target(loop):
 
 def test_release_inflight_and_ordinary_reengagement(loop):
     # Keep a completed, undelivered real proposal in flight at the local boundary.
-    result, weights, dispatch = held_result(loop)
+    result, selection, dispatch = held_result(loop)
     epoch = loop.lifecycle.control_epoch
     loop.step(release=True)
     assert loop.lifecycle.state is S.PAUSED
     assert loop.lifecycle.control_epoch == epoch + 1
+    assert loop.coordinator.assemble().snapshot.previous_selection_id is None
     stopped = loop.plant.sample().payload.joint_positions_rad
-    decision = loop.submit(result, weights)
+    decision = loop.submit(result, selection)
     assert decision.disposition == "discarded" and decision.proposal.reason == "old_epoch"
     loop.step()
     assert loop.plant.sample().payload.joint_positions_rad == stopped
@@ -181,10 +199,10 @@ def test_release_inflight_and_ordinary_reengagement(loop):
 
 
 def test_expired_result_cannot_extend_snapshot_lifetime(loop):
-    result, weights, dispatch = held_result(loop)
+    result, selection, dispatch = held_result(loop)
     # Gate expiry is checked at equality before lifecycle's same-time watchdog.
     loop.clock.now = dispatch.expires_ns
-    decision = loop.submit(result, weights)
+    decision = loop.submit(result, selection)
     assert decision.disposition == "discarded" and decision.proposal.reason == "snapshot_expired"
     loop.lifecycle.tick()
     assert loop.lifecycle.state is S.PAUSED and loop.plant.target is None
@@ -207,28 +225,33 @@ def test_stale_inputs_stop_active_target(loop, source):
 def test_host_rejection_never_applies_proposal(make_loop):
     with make_loop(initial_joints=proxy_inverse(Pose((.499, 0., .3), (0., 0., 0., 1.)))) as loop:
         loop.initialize()
-        result, weights, _ = held_result(loop)
-        forged = alter(result, next_tcp_pose={"position_xyz": [.504, 0., .3], "quaternion_xyzw": [0., 0., 0., 1.]})
-        decision = loop.lifecycle.submit_result(forged, weights=weights)
+        result, selection, _ = held_result(loop)
+        evaluation = to_dict(result.payload.candidate_evaluation)
+        selected = next(p for p in loop.store.acquire().resolved.candidates if p.candidate_id == evaluation["candidate_id"])
+        distance = math.dist((.504, 0., .3), selected.position_xyz)
+        evaluation.update(distance_m=distance, raw_g=distance, penalty=(distance/.01)**2)
+        forged = alter(result, next_tcp_pose={"position_xyz": [.504, 0., .3], "quaternion_xyzw": [0., 0., 0., 1.]},
+                       candidate_evaluation=evaluation)
+        decision = loop.lifecycle.submit_result(forged, selection=selection)
         assert decision.disposition == "rejected" and "host_constraint" in decision.proposal.reason
         assert loop.lifecycle.state is S.PAUSED and loop.plant.target is None
         assert not any(e.operation == "apply" for e in loop.plant.events)
 
 
-def test_computation_error_is_a_hold_and_requires_repreparation(make_loop):
-    joints = proxy_inverse(Pose((.405, 0., .3), (0., 0., 0., 1.)))
-    with make_loop("computation-error", initial_joints=joints) as loop:
-        loop.initialize()
-        result, _, decision, _ = loop.cycle()
-        assert result.payload.status == "hold" and result.payload.solver_status == "error"
-        assert result.payload.next_tcp_pose is None and not result.payload.evaluation_valid
-        assert decision.disposition == "accepted_hold"
-        assert loop.lifecycle.state is S.PAUSED and not loop.lifecycle.computation_ready
-        assert loop.plant.target is None
-        loop.input((0., 0.))
-        assert loop.lifecycle.state is S.PAUSED
-        loop.prepare()
-        assert loop.lifecycle.state is S.READY
+def test_worker_death_holds_and_requires_repreparation(loop):
+    move(loop.cycle())
+    os.kill(loop.preparations[-1]["worker_pid"], signal.SIGSTOP)
+    loop.input()
+    assert loop.dispatch() is not None
+    os.kill(loop.preparations[-1]["worker_pid"], signal.SIGKILL)
+    result, _, _, _ = loop.wait()
+    assert result.payload.status == "hold"
+    assert result.payload.next_tcp_pose is None and not result.payload.evaluation_valid
+    assert loop.lifecycle.state is S.PAUSED and loop.plant.target is None
+    loop.input((0., 0.))
+    assert loop.lifecycle.state is S.PAUSED
+    loop.prepare()
+    assert loop.lifecycle.state is S.READY
 
 
 def test_worker_stall_keeps_release_local(loop):
@@ -287,14 +310,14 @@ def test_context_reinitialization_and_explicit_fault_rearm(loop):
     move(loop.cycle())
 
 
-@pytest.mark.parametrize("program_count", [None, 16])
-def test_real_run_archive_and_fresh_process_replay(tmp_path, make_loop, program_count):
+@pytest.mark.parametrize("candidate_count", [1, 2, 16])
+def test_real_run_archive_and_fresh_process_replay(tmp_path, make_loop, candidate_count):
     # Test-only installation identifiers; CLI acceptance separately checks real
     # wheel bytes/SHAs and records both exact revisions in its manifest.
     software = {"server": {"revision": CORE_REVISION, "package_version": environment()["packages"]["ssc-core"],
                            "wheel_sha256": "0" * 64},
-                "ros2": {"revision": "0" * 40, "package_version": "0.7.0", "wheel_sha256": "0" * 64}}
-    with make_loop(program_count=program_count) as loop:
+                "ros2": {"revision": "0" * 40, "package_version": "0.8.0", "wheel_sha256": "0" * 64}}
+    with make_loop(candidate_count=candidate_count) as loop:
         run_normal(loop)
         loop.close()
         evidence = export_run(loop, tmp_path / "run.json", software)
@@ -303,13 +326,13 @@ def test_real_run_archive_and_fresh_process_replay(tmp_path, make_loop, program_
     assert evidence["payload_sha256"] == envelope["sha256"]
     assert evidence["payload_sha256"] != evidence["sha256"]
     assert evidence["accepted_moves"] == 3
-    assert envelope["payload"]["manifest"]["solver_config_id"] == "solver-slsqp-batch-v2"
-    assert len({pid for _, pid in loop.preparations[0]["evaluator_pids"]}) == 1
+    assert envelope["payload"]["manifest"]["solver_config_id"] == "solver-candidates-v2"
+    assert len(loop.preparations[0]["candidate_ids"]) == candidate_count
     replay = subprocess.run([sys.executable, "-I", "-m", "ssc_core.replay", evidence["path"],
                              "--sha256", evidence["sha256"]], capture_output=True, text=True, timeout=60)
     (tmp_path / "integration-replay.json").write_text(replay.stdout)
     assert replay.returncode == 0, replay.stdout + replay.stderr
-    assert json.loads(replay.stdout)["evaluation_count"] == 3 * (program_count or 2)
+    assert json.loads(replay.stdout)["evaluation_count"] == 3
     assert loaded.registry().resolve_snapshot(loop.dispatches[-1].inputs.snapshot.snapshot_id)
 
 
@@ -333,7 +356,7 @@ def test_new_loop_has_fresh_session_and_rejects_prior_session_work(make_loop):
         current.initialize()
         fresh = move(current.cycle())
         target = current.plant.target
-        decision = current.lifecycle.submit_result(old[0], weights=old[1])
+        decision = current.lifecycle.submit_result(old[0], selection=old[1])
         assert decision.disposition == "discarded" and not decision.actions
         assert current.plant.target is target
 
@@ -349,7 +372,7 @@ def test_soft_relation_cannot_relax_real_host_limits(make_loop, variant, start, 
         target = result.payload.next_tcp_pose.position_xyz
         assert start[0] < target[0] <= max_x + 2e-9
         assert result.payload.evaluation_valid and not result.payload.constraints_satisfied
-        assert result.payload.constraint_evaluations[0].raw_g > 0
+        assert result.payload.candidate_evaluation.raw_g > 0
         assert loop.solves[-1].host_margins
         assert min(margin for _, margin in loop.solves[-1].host_margins) >= -1e-8
         loop.step(u=(1., 0.))

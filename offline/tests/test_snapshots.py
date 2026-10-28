@@ -5,7 +5,7 @@ from threading import Barrier
 
 import pytest
 
-from ssc_core import GeometryRef, NUMERIC_OFFLINE_V1, ValidationError, parse_message, to_dict
+from ssc_core import GeometryRef, NUMERIC_CANDIDATES_V2, ValidationError, parse_message, to_dict
 from ssc_runtime import SnapshotCoordinator, SnapshotError
 
 NS = 1_000_000_000
@@ -25,7 +25,7 @@ def stamp(ns, clock=CLOCK):
 
 def envelope(kind, sequence, ns, payload, *, source=None):
     return {"message_type": kind, "meta": {
-        "schema_version": "1.0", "session_id": "session-offline-v1",
+        "schema_version": "2.0", "session_id": "session-offline-v1",
         "message_id": f"{kind}-{sequence}", "source_id": source or kind,
         "sequence": sequence, "produced_at": stamp(ns),
     }, "payload": payload}
@@ -72,11 +72,11 @@ def feed(coordinator, *, seq=1, ns=10 * NS):
 def move(dispatch, *, result_id="result-1", produced_ns=10 * NS):
     source = dispatch.inputs
     payload = {"result_id": result_id, "snapshot_id": source.snapshot.snapshot_id,
-               "weights_id": "weights-1", "control_epoch": source.snapshot.control_epoch,
+               "selection_id": "selection-1", "control_epoch": source.snapshot.control_epoch,
                "command_seq": dispatch.command_seq, "source_joystick_seq": source.joystick.message.meta.sequence,
                "source_robot_state_seq": source.robot_state.message.meta.sequence,
                "status": "move", "evaluation_valid": True, "solver_status": "solved",
-               "constraints_satisfied": False, "solve_time_s": .01, "constraint_evaluations": [],
+               "constraints_satisfied": False, "solve_time_s": .01, "candidate_evaluation": None,
                "next_tcp_pose": {"position_xyz": [.001, 0, .2], "quaternion_xyzw": [0, 0, 0, 1]},
                "horizon_s": source.snapshot.dt_s}
     message = envelope("ControlResult", dispatch.command_seq, produced_ns, payload)
@@ -102,8 +102,8 @@ def test_initial_snapshot_exact_graph_and_detached_data(setup):
     assert snapshot.previous_applied_command_id is None
     assert frozen.bundle is store.acquire()
     assert frozen.resolved.bundle is frozen.bundle.resolved
-    assert snapshot.program_refs == request.program_refs
-    assert snapshot.execution_binding_refs == request.execution_binding_refs
+    assert snapshot.candidate_set_id == request.candidate_set_id
+    assert snapshot.previous_selection_id is None
     assert frozen.expires_ns == 10_200_000_000 and frozen.created_ns == clock.now
     assert "command_seq" not in to_dict(snapshot)
     original["payload"]["u_xy"][0] = -1
@@ -111,8 +111,8 @@ def test_initial_snapshot_exact_graph_and_detached_data(setup):
     with pytest.raises(FrozenInstanceError):
         frozen.expires_ns += NS
     with pytest.raises(TypeError):
-        frozen.resolved.bundle.programs[0].keypoints[0][0] = 9
-    with store.artifacts() as (registry, _):
+        frozen.resolved.bundle.candidates[0].position_xyz[0] = 9
+    with store.artifacts() as registry:
         assert registry.resolve_snapshot(snapshot.snapshot_id) == frozen.resolved
 
 
@@ -196,7 +196,7 @@ def test_bad_mapping_and_commanded_feedback_are_rejected(setup):
         coordinator.receive(joystick(mapping_id="raw-device-axes"))
     with pytest.raises(ValidationError):
         coordinator.receive(state(state_source="commanded_pose"))
-    bad = parse_message(joystick(), policy=NUMERIC_OFFLINE_V1)
+    bad = parse_message(joystick(), policy=NUMERIC_CANDIDATES_V2)
     with pytest.raises(ValidationError):
         coordinator.receive(replace(bad, payload=replace(bad.payload, u_xy=(float("nan"), 0))))
 
@@ -298,16 +298,16 @@ def test_dispatched_arrays_survive_actual_geometry_revision(setup):
     feed(coordinator)
     old = coordinator.assemble()
     dispatch = coordinator.dispatch(old)
-    before = dispatch.inputs.resolved.bundle.programs[0].keypoints
+    before = dispatch.inputs.resolved.bundle.geometry.keypoints
     geometry = to_dict(old.resolved.bundle.geometry)
     geometry.update(geometry_id="geometry-revision-2", revision=2)
     geometry["keypoints"][0]["position_xyz"][0] += .01
-    with store.artifacts() as (registry, _):
+    with store.artifacts() as registry:
         registry.register_record("SceneGeometry", geometry, session_id=store.session_id)
     activate(store, replace(request, geometry_ref=GeometryRef(geometry["geometry_id"], 2)))
     new = coordinator.assemble()
-    assert new.resolved.bundle.programs[0].keypoints != before
-    assert dispatch.inputs.resolved.bundle.programs[0].keypoints == before
+    assert new.resolved.bundle.geometry.keypoints != before
+    assert dispatch.inputs.resolved.bundle.geometry.keypoints == before
     assert old.snapshot.geometry_ref.revision == 1 and new.snapshot.geometry_ref.revision == 2
     with pytest.raises(SnapshotError, match="superseded_bundle"): coordinator.dispatch(old)
 
@@ -376,11 +376,11 @@ def test_latest_accepted_hold_is_retained_not_skipped(setup):
     coordinator.record_acceptance(result, acceptance(result))
     seq = coordinator.allocate_local_command_sequence()
     hold = envelope("ControlResult", seq, 10 * NS, {
-        "result_id": "hold-1", "snapshot_id": None, "weights_id": None,
+        "result_id": "hold-1", "snapshot_id": None, "selection_id": None,
         "control_epoch": 3, "command_seq": seq, "source_joystick_seq": None,
         "source_robot_state_seq": None, "status": "hold", "evaluation_valid": False,
         "solver_status": "not_run", "constraints_satisfied": None, "solve_time_s": 0,
-        "constraint_evaluations": [], "reason": "release"})
+        "candidate_evaluation": None, "reason": "release"})
     coordinator.record_acceptance(hold, acceptance(hold, applied="applied-hold"))
     frozen = coordinator.assemble()
     assert frozen.snapshot.previous_applied_command_id == "applied-hold"
@@ -470,10 +470,10 @@ def test_retained_trace_contains_resolved_inputs_and_original_deadlines(setup, t
     dispatch = coordinator.dispatch(frozen)
     clock.now = frozen.expires_ns
     arrival = coordinator.observe_result(move(dispatch))
-    trace = {"profile": "offline-reference-v1", "configuration": to_dict(frozen.bundle.resolved.configuration),
+    trace = {"profile": "offline-candidates-v2", "configuration": to_dict(frozen.bundle.resolved.configuration),
              "snapshot": to_dict(frozen.snapshot), "clock_id": frozen.clock_id,
              "joystick": to_dict(frozen.resolved.joystick), "state": to_dict(frozen.resolved.robot_state),
-             "program_keypoints": [p.keypoints for p in frozen.resolved.bundle.programs],
+             "candidates": [to_dict(p) for p in frozen.resolved.bundle.candidates],
              "creation_ns": frozen.created_ns, "expiry_ns": frozen.expires_ns,
              "command_seq": dispatch.command_seq, "dispatch_ns": dispatch.dispatched_ns,
              "solve_deadline_ns": dispatch.solve_deadline_ns,
@@ -482,3 +482,37 @@ def test_retained_trace_contains_resolved_inputs_and_original_deadlines(setup, t
     (tmp_path / "snapshot-trace.json").write_text(json.dumps(trace, indent=2) + "\n")
     assert trace["expiry_ns"] - trace["creation_ns"] == 200_000_000
     assert not trace["before_expiry"]
+
+
+def test_selection_history_is_explicit_and_cleared_on_release_epoch_and_context(setup):
+    from ssc_core import estimate_intent, get_intent_config
+    coordinator, clock, store, request = setup
+    feed(coordinator)
+
+    def select():
+        source = coordinator.assemble()
+        selection = estimate_intent(source.resolved, get_intent_config("intent-candidates-v2"),
+            selection_id=f"selection-{source.snapshot.snapshot_seq}", policy=NUMERIC_CANDIDATES_V2).selection
+        with store.artifacts() as registry:
+            registry.register_record("CandidateSelection", selection, session_id=store.session_id)
+        coordinator.record_selection(selection)
+        return source, selection
+
+    first, selected = select()
+    following = coordinator.assemble()
+    assert following.snapshot.previous_selection_id == selected.selection_id
+    assert following.resolved.previous_selection == selected
+    assert following.resolved.previous_selection_snapshot == first.snapshot
+    with store.artifacts() as registry:
+        assert registry.resolve_snapshot(following.snapshot.snapshot_id) == following.resolved
+    coordinator.receive(joystick(2, clock.now, u_xy=[0, 0]))
+    assert coordinator.assemble().snapshot.previous_selection_id is None
+    with pytest.raises(SnapshotError, match="motion_disabled"):
+        coordinator.record_selection(selected)
+    coordinator.receive(joystick(3, clock.now))
+    select()
+    coordinator.set_control_epoch(4)
+    assert coordinator.assemble().snapshot.previous_selection_id is None
+    select()
+    activate(store, request)
+    assert coordinator.assemble().snapshot.previous_selection_id is None

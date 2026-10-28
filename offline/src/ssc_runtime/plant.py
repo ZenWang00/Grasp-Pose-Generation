@@ -11,7 +11,7 @@ import math
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from ssc_core import Message, NUMERIC_OFFLINE_V1, Pose, parse_message, to_dict
+from ssc_core import Message, NUMERIC_CANDIDATES_V2, Pose, parse_message, to_dict
 
 from .constraints import (ANGLE_LIMIT, JOINT_NAMES, SyntheticHostChecker,
                           _configuration, basic_step_constraints, measured_view,
@@ -102,7 +102,7 @@ class SyntheticController:
 
     @property
     def provenance(self) -> dict:
-        return {"environment": "software-simulation", "profile_id": "offline-reference-v1",
+        return {"environment": "software-simulation", "profile_id": "offline-candidates-v2",
                 "robot_model_id": "synthetic-rotary-v1", "config_id": self.configuration.config_id,
                 "motion_constraint_set_id": self.configuration.motion_constraint_set_id,
                 "validation_policy_id": self.configuration.validation_policy_id,
@@ -128,17 +128,17 @@ class SyntheticController:
     def _message(self, sequence):
         stamp = self._stamp(self._state_ns)
         return parse_message({"message_type": "RobotState", "meta": {
-            "schema_version": "1.0", "session_id": self.session_id,
+            "schema_version": "2.0", "session_id": self.session_id,
             "message_id": f"{self.session_id}:{self.source_id}:state:{sequence}",
             "source_id": self.source_id, "sequence": sequence, "produced_at": stamp},
             "payload": {"sampled_at": stamp, "frame_id": self.configuration.control_frame,
                 "tcp_frame": self.configuration.tcp_frame, "tcp_pose": to_dict(proxy_forward(self._q)),
                 "joint_names": list(JOINT_NAMES), "joint_positions_rad": list(self._q),
                 "joint_velocities_radps": list(self._velocity), "state_source": "fk_from_measured_joints"}},
-            policy=NUMERIC_OFFLINE_V1)
+            policy=NUMERIC_CANDIDATES_V2)
 
     def _state(self, message):
-        message = parse_message(to_dict(message), policy=NUMERIC_OFFLINE_V1)
+        message = parse_message(to_dict(message), policy=NUMERIC_CANDIDATES_V2)
         if message.message_type != "RobotState" or message.meta.session_id != self.session_id:
             raise ValueError("feedback_identity")
         sample = message.payload.sampled_at
@@ -199,7 +199,7 @@ class SyntheticController:
                 raise ValueError("controller_fault_latched")
             if type(target) is not AcceptedTarget:
                 raise ValueError("expected_accepted_target")
-            message = parse_message(to_dict(target.result), policy=NUMERIC_OFFLINE_V1)
+            message = parse_message(to_dict(target.result), policy=NUMERIC_CANDIDATES_V2)
             result = message.payload
             if message.message_type != "ControlResult" or message.meta.session_id != self.session_id:
                 raise ValueError("target_identity")

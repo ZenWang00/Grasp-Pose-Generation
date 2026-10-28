@@ -1,12 +1,10 @@
 # Synthetic controller and feedback plant
 
-`ssc-runtime==0.5.0` implements [P1-14 / issue #5](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/5),
-using `ssc-core==0.6.0` at `95d618f567f5f057a1b3f1737cc394a105fa9a4e`.
-The model is `synthetic-rotary-v1`, with `synthetic-host-v1`, `numeric-offline-v1`
-and `config-offline-v1` under
-[offline-reference-v1 §§2, 5–7](https://github.com/ZenWang00/semantic-shared-control/blob/95d618f567f5f057a1b3f1737cc394a105fa9a4e/docs/wiki/Offline-Reference-Profile.md).
-Schema 1.0 and geometry-residual-v1 are unchanged. No ROS, hardware model,
-physical dynamics, calibrated measurements or stopping guarantee is provided.
+`ssc-runtime==0.8.0` consumes `ssc-core==0.11.0` with schema 2.0.
+The model remains `synthetic-rotary-v1` with `synthetic-host-v1`, now under
+`numeric-candidates-v2`. Numerical behavior is specified by the
+[candidate profile](https://github.com/ZenWang00/semantic-shared-control/blob/main/docs/wiki/Offline-Candidate-Profile.md).
+No ROS, real hardware model or grasp-success claim is implied.
 
 ## Interface
 
@@ -108,7 +106,7 @@ cancellation, hold, stop, expiry equality, wire round-trip, missing/stale sample
 invalid commands, internal step violations and deterministic failures. Direct
 gate/lifecycle tests exercise actual plant application, release and discarded
 late results, plus apply/stop/controller failures and explicit fault rearm.
-Their numerical receipt preparation is stubbed; they do not run the optimizer.
+Their candidate selection and fixed-distance diagnostics are real; these component tests do not run the optimizer.
 The existing Linux real-worker activation test still runs in the full suite.
 
 `test_deterministic_retained_plant_trace` runs identical events twice and checks

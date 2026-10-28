@@ -1,73 +1,10 @@
 {
-  "fixture_kind": "synthetic_structure_only",
-  "constraint_programs": [
-    {
-      "program_id": "program-bottle-distance-offline-v1",
-      "source_sha256": "a686a0b43a1e5e8dd24b8cab1f8015bb81c89975e4d42fd253dee29bcd40cea2",
-      "function_api_version": "geometry-residual-v1",
-      "object_id": "object-bottle-offline-v1",
-      "description": "Synthetic distance relation with zero tolerance, using the offline reference approach point.",
-      "entrypoint": "evaluate",
-      "source_code": "def evaluate(p_tcp, R_control_tcp, keypoints, axis_dirs, params):\n    distance = norm(p_tcp - keypoints[0])\n    return distance - params[0]\n",
-      "keypoint_bindings": [
-        "kp-bottle-approach-offline-v1"
-      ],
-      "axis_bindings": [],
-      "parameters": [
-        {
-          "name": "distance_tolerance",
-          "value": 0,
-          "unit": "m"
-        }
-      ],
-      "output_unit": "m"
-    },
-    {
-      "program_id": "program-cup-distance-offline-v1",
-      "source_sha256": "a686a0b43a1e5e8dd24b8cab1f8015bb81c89975e4d42fd253dee29bcd40cea2",
-      "function_api_version": "geometry-residual-v1",
-      "object_id": "object-cup-offline-v1",
-      "description": "Synthetic distance relation with zero tolerance, using the offline reference approach point.",
-      "entrypoint": "evaluate",
-      "source_code": "def evaluate(p_tcp, R_control_tcp, keypoints, axis_dirs, params):\n    distance = norm(p_tcp - keypoints[0])\n    return distance - params[0]\n",
-      "keypoint_bindings": [
-        "kp-cup-approach-offline-v1"
-      ],
-      "axis_bindings": [],
-      "parameters": [
-        {
-          "name": "distance_tolerance",
-          "value": 0,
-          "unit": "m"
-        }
-      ],
-      "output_unit": "m"
-    }
-  ],
-  "validation_receipts": [],
-  "execution_bindings": [
-    {
-      "binding_id": "binding-bottle-offline-v1",
-      "program_id": "program-bottle-distance-offline-v1",
-      "config_id": "config-offline-v1",
-      "normalization_scale": 0.01,
-      "weight": 1.0,
-      "validation_receipt_id": "unissued-receipt-bottle-offline-v1"
-    },
-    {
-      "binding_id": "binding-cup-offline-v1",
-      "program_id": "program-cup-distance-offline-v1",
-      "config_id": "config-offline-v1",
-      "normalization_scale": 0.01,
-      "weight": 1.0,
-      "validation_receipt_id": "unissued-receipt-cup-offline-v1"
-    }
-  ],
+  "fixture_kind": "synthetic_candidate_positions",
   "messages": [
     {
       "message_type": "SessionConfig",
       "meta": {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "session_id": "session-offline-v1",
         "message_id": "message-sessionconfig-offline-v1",
         "source_id": "synthetic-host-offline-v1",
@@ -79,11 +16,11 @@
         }
       },
       "payload": {
-        "config_id": "config-offline-v1",
+        "config_id": "config-candidates-v2",
         "control_frame": "synthetic_base",
         "tcp_frame": "synthetic_tcp",
         "robot_model_id": "synthetic-rotary-v1",
-        "validation_policy_id": "numeric-offline-v1",
+        "validation_policy_id": "numeric-candidates-v2",
         "motion_constraint_set_id": "synthetic-host-v1",
         "control_period_s": 0.2,
         "max_xy_speed_mps": 0.05,
@@ -100,7 +37,7 @@
     {
       "message_type": "TaskContext",
       "meta": {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "session_id": "session-offline-v1",
         "message_id": "message-taskcontext-offline-v1",
         "source_id": "synthetic-host-offline-v1",
@@ -114,13 +51,13 @@
       "payload": {
         "task_id": "task-bottle-cup-offline-v1",
         "revision": 1,
-        "instruction": "Synthetic approach to the bottle or cup under offline-reference-v1."
+        "instruction": "Synthetic approach to candidate TCP targets near the bottle or cup."
       }
     },
     {
       "message_type": "SceneObservation",
       "meta": {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "session_id": "session-offline-v1",
         "message_id": "message-sceneobservation-offline-v1",
         "source_id": "synthetic-host-offline-v1",
@@ -210,7 +147,7 @@
     {
       "message_type": "SceneGeometry",
       "meta": {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "session_id": "session-offline-v1",
         "message_id": "message-scenegeometry-offline-v1",
         "source_id": "synthetic-perception-offline-v1",
@@ -265,7 +202,7 @@
     {
       "message_type": "SemanticContext",
       "meta": {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "session_id": "session-offline-v1",
         "message_id": "message-semanticcontext-offline-v1",
         "source_id": "synthetic-perception-offline-v1",
@@ -292,23 +229,57 @@
             "object_id": "object-cup-offline-v1",
             "task_relevance": 0.5
           }
-        ],
-        "program_refs": [
+        ]
+      }
+    },
+    {
+      "message_type": "CandidateSet",
+      "meta": {
+        "schema_version": "2.0",
+        "session_id": "session-offline-v1",
+        "message_id": "message-candidates-v2",
+        "source_id": "synthetic-perception-offline-v1",
+        "sequence": 6,
+        "produced_at": {
+          "clock_id": "synthetic-clock-offline-v1",
+          "sec": 10,
+          "nanosec": 0
+        }
+      },
+      "payload": {
+        "task_id": "task-bottle-cup-offline-v1",
+        "task_revision": 1,
+        "scene_id": "scene-bottle-cup-offline-v1",
+        "feature_set_id": "features-bottle-cup-offline-v1",
+        "observation_id": "observation-bottle-cup-offline-v1",
+        "candidate_set_id": "candidates-bottle-cup-v2",
+        "frame_id": "synthetic_base",
+        "candidates": [
           {
-            "program_id": "program-bottle-distance-offline-v1",
-            "source_sha256": "a686a0b43a1e5e8dd24b8cab1f8015bb81c89975e4d42fd253dee29bcd40cea2"
+            "candidate_id": "candidate-bottle-v2",
+            "object_id": "object-bottle-offline-v1",
+            "position_xyz": [
+              0.41,
+              0,
+              0.3
+            ]
           },
           {
-            "program_id": "program-cup-distance-offline-v1",
-            "source_sha256": "a686a0b43a1e5e8dd24b8cab1f8015bb81c89975e4d42fd253dee29bcd40cea2"
+            "candidate_id": "candidate-cup-v2",
+            "object_id": "object-cup-offline-v1",
+            "position_xyz": [
+              0.39,
+              0,
+              0.3
+            ]
           }
         ]
       }
     }
   ],
-  "fixture_id": "bottle-cup-offline-v1",
-  "profile_id": "offline-reference-v1",
-  "notice": "Synthetic offline-reference-v1 inputs, not robot measurements or an activated runtime bundle. No host validation receipts have been issued. Execution binding receipt IDs deliberately remain unresolved until the later trusted validation stage.",
+  "fixture_id": "bottle-cup-candidates-v2",
+  "profile_id": "candidates-reference-v2",
+  "notice": "Synthetic data-only TCP candidates, not robot measurements or real VLM output.",
   "initial_pose": {
     "position_xyz": [
       0.4,

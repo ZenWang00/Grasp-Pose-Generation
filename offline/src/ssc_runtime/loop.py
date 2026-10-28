@@ -1,6 +1,6 @@
 """Serialized offline coordinator with asynchronous, separately supervised solves.
 
-Simulation time advances only in 20 ms ticks. Real solver/evaluator budgets are
+Simulation time advances only in 20 ms ticks. Real solver budgets are
 independently enforced by ssc-core; no simulated rate is a hardware guarantee.
 """
 
@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 import time
 from uuid import uuid4
 
-from ssc_core import (AppliedCommandReference, HostCheckerSpec, NUMERIC_OFFLINE_V1,
+from ssc_core import (AppliedCommandReference, HostCheckerSpec, NUMERIC_CANDIDATES_V2,
                       SupervisedOptimizer, estimate_intent, get_intent_config, get_solver_config,
                       parse_message, parse_record, to_dict)
 from .gate import CommandGate
@@ -32,9 +32,9 @@ class SimulationClock:
 
 
 class OfflineLoop:
-    def __init__(self, variant="default", *, session_id=None, initial_joints=(0.,) * 6, program_count=None):
+    def __init__(self, variant="default", *, session_id=None, initial_joints=(0.,) * 6, candidate_count=None):
         self.clock = SimulationClock()
-        self.fixture = Fixture(variant, program_count=program_count)
+        self.fixture = Fixture(variant, candidate_count=candidate_count)
         self.session_id = session_id or "session-integration-" + uuid4().hex
         self.intent_config = get_intent_config(self.fixture.intent_id)
         self.optimizer = None
@@ -57,7 +57,7 @@ class OfflineLoop:
         if session_id != self.session_id:
             raise ValueError("create a new OfflineLoop for a new session")
         self.store, self.request = self.fixture.create_store(session_id)
-        config = parse_record("SessionConfig", self.fixture.records["SessionConfig"], policy=NUMERIC_OFFLINE_V1)
+        config = parse_record("SessionConfig", self.fixture.records["SessionConfig"], policy=NUMERIC_CANDIDATES_V2)
         self.plant = SyntheticController(config, session_id=session_id,
             clock_ns=self.clock, clock_id=self.clock.clock_id, initial_joints=self.initial_joints)
         self.coordinator = SnapshotCoordinator(self.store, clock_ns=self.clock, clock_id=self.clock.clock_id,
@@ -73,11 +73,11 @@ class OfflineLoop:
         sequence = self.counters.get(kind, 0) + 1
         self.counters[kind] = sequence
         return parse_message({"message_type": kind, "meta": {
-            "schema_version": "1.0", "session_id": self.session_id,
+            "schema_version": "2.0", "session_id": self.session_id,
             "source_id": "offline-joystick" if kind == "JoystickSample" else "offline-" + kind,
             "message_id": f"{self.session_id}:{kind}:{sequence}", "sequence": sequence,
             "produced_at": self.clock.stamp()}, "payload": to_dict(payload) if not isinstance(payload, dict) else payload},
-            policy=NUMERIC_OFFLINE_V1)
+            policy=NUMERIC_CANDIDATES_V2)
 
     def receive(self, message):
         started = time.perf_counter_ns()
@@ -177,30 +177,33 @@ class OfflineLoop:
             "inputs": [{"message_id": v.message.meta.message_id, "received_at": self.clock.stamp(v.received_ns),
                         "source_age_ns": source.created_ns - v.sampled_ns} for v in timed]})
         intent = estimate_intent(source.resolved, self.intent_config,
-            weights_id=f"weights-{source.snapshot.snapshot_id}", policy=NUMERIC_OFFLINE_V1)
+            selection_id=f"selection-{source.snapshot.snapshot_id}", policy=NUMERIC_CANDIDATES_V2)
         if intent.disposition != "active":
             self.lifecycle.computation_status(ready=False, reason="intent_" + intent.disposition)
             self.capture()
             return None
-        weights = self.envelope("ObjectWeights", intent.weights)
-        self.messages[weights.meta.message_id] = weights
+        selection = self.envelope("CandidateSelection", intent.selection)
+        self.messages[selection.meta.message_id] = selection
+        with self.store.artifacts() as registry:
+            registry.register_message(selection)
+        self.coordinator.record_selection(intent.selection)
         previous = source.previous_applied
         reference = None if previous is None else AppliedCommandReference(previous.result, previous.acceptance,
             previous.source.resolved if previous.source else None)
         # Map the ORIGINAL dispatch deadline once; input/gate callbacks never
         # wait on the Future and result arrival never extends this deadline.
         deadline = time.monotonic_ns() + max(0, dispatch.solve_deadline_ns - self.clock.now)
-        future = self.optimizer.solve(source.resolved, intent.weights, intent_config=self.intent_config,
+        future = self.optimizer.solve(source.resolved, intent.selection, intent_config=self.intent_config,
             command_seq=dispatch.command_seq, previous_applied=reference,
             result_id=f"result-{source.snapshot.snapshot_id}", deadline_ns=deadline)
-        self.pending = (future, weights, dispatch)
+        self.pending = (future, selection, dispatch)
         self.capture()
         return dispatch
 
     def poll(self, *, deliver=True):
         if self.pending is None or not self.pending[0].done():
             return None
-        future, weights, dispatch = self.pending
+        future, selection, dispatch = self.pending
         self.pending = None
         outcome = future.result()  # Done check above; no worker wait here.
         self.solves.append(outcome)
@@ -209,14 +212,14 @@ class OfflineLoop:
         if outcome.result.status == "move":
             self.event("evaluation", {"result_id": outcome.result.result_id, "pose": to_dict(outcome.result.next_tcp_pose)})
         if deliver:
-            decision = self.submit(result, weights)
+            decision = self.submit(result, selection)
         else:
             decision = None
-        return result, weights, decision, dispatch
+        return result, selection, decision, dispatch
 
-    def submit(self, result, weights):
+    def submit(self, result, selection):
         self.event("result_arrival", {"result_id": result.payload.result_id, "received_at": self.clock.stamp()})
-        decision = self.lifecycle.submit_result(result, weights=weights)
+        decision = self.lifecycle.submit_result(result, selection=selection)
         self.capture()
         return decision
 

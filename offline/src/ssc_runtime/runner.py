@@ -16,10 +16,10 @@ def run_normal(loop, cycles=3):
     loop.initialize()
     results = []
     for i in range(cycles):
-        result, weights, decision, dispatch = loop.cycle((1., 0.))
+        result, selection, decision, dispatch = loop.cycle((1., 0.))
         if decision.disposition != "accepted_move":
             raise RuntimeError(f"normal case did not move: {decision.proposal.reason}; {loop.solves[-1].diagnostic}")
-        results.append((result, weights, decision, dispatch))
+        results.append((result, selection, decision, dispatch))
         # Independent plant evolution after receipt; never set state to target.
         next_cycle = dispatch.dispatched_ns + 200_000_000
         while loop.clock.now < next_cycle:
@@ -42,17 +42,17 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True, help="New directory; never overwrite existing evidence")
     parser.add_argument("--variant", choices=VARIANTS, default="default")
     parser.add_argument("--cycles", type=int, default=3)
-    parser.add_argument("--program-count", type=int, help="Replicated default relations, 2-16; preserves per-object weight")
+    parser.add_argument("--candidate-count", type=int, help="Number of grounded candidate points, 1-16")
     args = parser.parse_args(argv)
     if sys.platform != "linux":
         parser.error("bounded numerical execution requires Linux")
     if not 2 <= args.cycles <= 20:
         parser.error("cycles must be between 2 and 20")
-    if args.program_count is not None and (args.variant != "default" or not 2 <= args.program_count <= 16):
-        parser.error("program-count requires the default variant and a count in 2-16")
+    if args.candidate_count is not None and (args.variant != "default" or not 1 <= args.candidate_count <= 16):
+        parser.error("candidate-count requires the default variant and a count in 1-16")
     software = installation(args.core_wheel, args.runtime_wheel, args.runtime_revision)
     args.output.mkdir(parents=True, exist_ok=False)
-    with OfflineLoop(args.variant, program_count=args.program_count) as loop:
+    with OfflineLoop(args.variant, candidate_count=args.candidate_count) as loop:
         try:
             run_normal(loop, args.cycles)
         except Exception as exc:

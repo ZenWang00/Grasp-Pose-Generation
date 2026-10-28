@@ -6,7 +6,7 @@ import math
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from ssc_core import NUMERIC_OFFLINE_V1, Pose, SessionConfig, parse_record, to_dict
+from ssc_core import NUMERIC_CANDIDATES_V2, Pose, SessionConfig, parse_record, to_dict
 from ssc_core.host_constraints import ConstraintMargin, HostConstraintResult, MeasuredStateView
 
 
@@ -17,7 +17,7 @@ ANGLE_LIMIT = math.pi / 3
 
 
 def _pose(value):
-    return parse_record(Pose, to_dict(value), policy=NUMERIC_OFFLINE_V1)
+    return parse_record(Pose, to_dict(value), policy=NUMERIC_CANDIDATES_V2)
 
 
 def _joints(values):
@@ -55,11 +55,11 @@ def measured_view(state) -> MeasuredStateView:
 
 
 def _configuration(configuration):
-    config = parse_record(SessionConfig, to_dict(configuration), policy=NUMERIC_OFFLINE_V1)
+    config = parse_record(SessionConfig, to_dict(configuration), policy=NUMERIC_CANDIDATES_V2)
     if (config.control_frame, config.tcp_frame, config.robot_model_id,
             config.motion_constraint_set_id, config.validation_policy_id) != (
             "synthetic_base", "synthetic_tcp", "synthetic-rotary-v1",
-            "synthetic-host-v1", "numeric-offline-v1"):
+            "synthetic-host-v1", "numeric-candidates-v2"):
         raise ValueError("synthetic_configuration_mismatch")
     return config
 
@@ -106,7 +106,7 @@ class SyntheticHostChecker:
         fraction = min(1., max(0., float((center - start) @ delta) / squared)) if squared else 0.
         distance = float(np.linalg.norm(start + fraction * delta - center))
         margins.append(_margin("excluded_sphere_segment", (distance - .0201) / SCALE))
-        return HostConstraintResult(tuple(margins), policy=NUMERIC_OFFLINE_V1)
+        return HostConstraintResult(tuple(margins), policy=NUMERIC_CANDIDATES_V2)
 
 
 def basic_step_constraints(*, candidate_pose, measured_state, u_xy, dt_s,
@@ -131,4 +131,4 @@ def basic_step_constraints(*, candidate_pose, measured_state, u_xy, dt_s,
         for axis, value in zip("xyz", values):
             margins.extend((_margin(f"{prefix}_{axis}_lower", 1 + value),
                             _margin(f"{prefix}_{axis}_upper", 1 - value)))
-    return HostConstraintResult(tuple(margins), policy=NUMERIC_OFFLINE_V1)
+    return HostConstraintResult(tuple(margins), policy=NUMERIC_CANDIDATES_V2)

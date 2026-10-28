@@ -1,14 +1,20 @@
 """P1-13 lifecycle, withdrawal, watchdog and recovery tests.
 
 All evidence is software simulation with a controllable integer-nanosecond clock
-and recording adapters. Numerical receipt generation is stubbed by the shared
-fixture; registry, host trust, snapshot, gate and lifecycle logic are real.
+and recording adapters. Fixed candidate diagnostics use real selection and geometry;
+registry, snapshot, gate and lifecycle logic are real.
 """
 
 from dataclasses import replace
 import json
 
 import pytest
+from pathlib import Path
+import runpy
+
+# Pytest 7 importlib mode may create a synthetic `tests` package that has no
+# sibling search path. Load this pure test helper without altering sys.path.
+selection_and_evaluation = runpy.run_path(str(Path(__file__).with_name("helpers.py")))["selection_and_evaluation"]
 from ssc_core import Pose, to_dict
 from ssc_runtime import (CommandGate, LifecycleCoordinator, LifecycleError, SessionRuntime,
                          SnapshotCoordinator, proxy_inverse)
@@ -107,7 +113,7 @@ class Harness:
             self.counters[session][kind] += 1
             sequence = self.counters[session][kind]
         return {"message_type": kind, "meta": {
-            "schema_version": "1.0", "session_id": session, "message_id": f"{kind}-{sequence}",
+            "schema_version": "2.0", "session_id": session, "message_id": f"{kind}-{sequence}",
             "source_id": kind, "sequence": sequence, "produced_at": self.stamp(self.clock.now)},
             "payload": payload}
 
@@ -162,18 +168,16 @@ class Harness:
 
     def result(self, dispatch, *, position=(.405, 0., .3), hold=False, tag="r"):
         source, seq = dispatch.inputs, dispatch.command_seq
-        bindings = source.bundle.resolved.execution_bindings
-        weights_id = f"weights-{seq}-{tag}"
+        selection_id = f"selection-{seq}-{tag}"
+        selection, evaluation = selection_and_evaluation(source, selection_id, position)
         payload = {
             "result_id": f"proposal-{seq}-{tag}", "snapshot_id": source.snapshot.snapshot_id,
-            "weights_id": weights_id, "control_epoch": source.snapshot.control_epoch, "command_seq": seq,
+            "selection_id": selection_id, "control_epoch": source.snapshot.control_epoch, "command_seq": seq,
             "source_joystick_seq": source.joystick.message.meta.sequence,
             "source_robot_state_seq": source.robot_state.message.meta.sequence,
             "status": "move", "evaluation_valid": True, "solver_status": "solved",
             "constraints_satisfied": False, "solve_time_s": .01,
-            "constraint_evaluations": [{"program_id": b.program_id, "raw_g": .001,
-                                        "normalization_scale": b.normalization_scale,
-                                        "penalty": (.001 / b.normalization_scale) ** 2} for b in bindings],
+            "candidate_evaluation": evaluation,
             "next_tcp_pose": {"position_xyz": list(position), "quaternion_xyzw": [0, 0, 0, 1]},
             "horizon_s": source.snapshot.dt_s}
         if hold:
@@ -181,21 +185,17 @@ class Harness:
                            solver_status="error", constraints_satisfied=None)
             payload.pop("next_tcp_pose")
             payload.pop("horizon_s")
-        meta = {"schema_version": "1.0", "session_id": source.session_id, "sequence": seq,
+        meta = {"schema_version": "2.0", "session_id": source.session_id, "sequence": seq,
                 "produced_at": self.stamp(self.clock.now)}
         candidates = source.bundle.resolved.candidates
         result = {"message_type": "ControlResult", "payload": payload,
                   "meta": {**meta, "message_id": f"ControlResult-{seq}-{tag}", "source_id": "optimizer"}}
-        weights = {"message_type": "ObjectWeights", "meta": {
-            **meta, "message_id": f"ObjectWeights-{seq}-{tag}", "source_id": "estimator"}, "payload": {
-            "weights_id": weights_id, "snapshot_id": source.snapshot.snapshot_id,
-            "estimator_config_id": "intent-linear-v1",
-            "weights": [{"object_id": c.object_id, "weight": 1 / len(candidates)} for c in candidates],
-            "assistance_strength": .5}}
-        return result, weights
+        selection = {"message_type": "CandidateSelection", "meta": {
+            **meta, "message_id": f"CandidateSelection-{seq}-{tag}", "source_id": "estimator"}, "payload": selection}
+        return result, selection
 
     def submit(self, pair):
-        return self.lc.submit_result(pair[0], weights=pair[1])
+        return self.lc.submit_result(pair[0], selection=pair[1])
 
     def withdrawals(self):
         return [r for r in self.lc.records if r.kind == "withdrawal"]
@@ -248,7 +248,7 @@ def test_release_during_stalled_solve_is_local_and_rejects_late_result(h, enable
 def test_release_fixture_epoch_increments_once_and_resume_needs_fresh_neutral_engagement(h):
     h.active()
     h.lc.dispatch_cycle()
-    h.advance(40)  # offline-reference-v1 release fixture: t = 10.04 s
+    h.advance(40)  # offline-candidates-v2 release fixture: t = 10.04 s
     h.feed()
     h.neutral()
     assert [r.epoch_after for r in h.withdrawals()] == [1]
@@ -792,7 +792,7 @@ def test_session_restart_withdraws_before_clearing_and_old_session_cannot_revive
     assert h.canceller.calls == [(0, "operator restart")]
     # Old results and inputs are rejected regardless of sequence or timestamp.
     assert h.submit(stale_pair).disposition == "discarded"
-    assert old_runtime.gate.submit(stale_pair[0], weights=stale_pair[1]).disposition == "discarded"
+    assert old_runtime.gate.submit(stale_pair[0], selection=stale_pair[1]).disposition == "discarded"
     assert h.lc.on_input(h.joystick(session=SESSION)) is None
     assert h.lc.records[-1].reason == "session_mismatch"
     with pytest.raises(LifecycleError, match="session_reused"):
@@ -1008,7 +1008,7 @@ def test_retained_lifecycle_trace(h, tmp_path):
     h.lc.restart_session("operator restart", new_session_id="session-offline-v2")
     stale = h.lc.on_input(h.joystick(session=SESSION))
     trace = {
-        "profile": "offline-reference-v1", "configuration": to_dict(bundle.resolved.configuration),
+        "profile": "offline-candidates-v2", "configuration": to_dict(bundle.resolved.configuration),
         "liveness_timeout_s": 0.2, "evidence": "software simulation, controllable clock, recording adapter",
         "scenarios": scenarios, "records": [r.to_dict() for r in h.lc.records],
         "adapter_calls": h.adapter.calls, "worker_cancellations": h.canceller.calls,
