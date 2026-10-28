@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ZenWang00/semantic-shared-control
-          ref: 0a3c169516b79e5056d426ad3eee7613fc0a562e
+          ref: e9f54789b3e62c8bbe01772a3bd96bd581f6fb66
           path: shared-core
       - uses: actions/setup-python@v5
         with:

@@ -8,7 +8,7 @@ import json
 from ssc_core import GeometryRef, TaskRef
 from .activation import ActivationRequest, ActiveBundleStore
 
-CORE_REVISION = "0a3c169516b79e5056d426ad3eee7613fc0a562e"
+CORE_REVISION = "e9f54789b3e62c8bbe01772a3bd96bd581f6fb66"
 SOLVER_ID = "solver-candidates-v2"
 PROFILE_ID = "offline-candidates-v2"
 MAPPING = "integration-xy-v1"
@@ -62,6 +62,9 @@ class Fixture:
             candidates["candidates"] = [dict(deepcopy(originals[i % 2]),
                 candidate_id=f"candidate-{candidate_count}-{i:02d}") for i in range(candidate_count)]
             candidates["candidate_set_id"] += f"-count-{candidate_count}"
+        owners = {point["object_id"] for point in candidates["candidates"]}
+        semantic["object_relevance"] = [item for item in semantic["object_relevance"]
+                                        if item["object_id"] in owners]
         self.registered = []
 
     def create_store(self, session_id):
