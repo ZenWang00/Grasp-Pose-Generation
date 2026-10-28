@@ -6,9 +6,10 @@ import math
 
 import numpy as np
 import pytest
+from .helpers import selection_and_evaluation
 from scipy.spatial.transform import Rotation
 
-from ssc_core import NUMERIC_OFFLINE_V1, Pose, SessionConfig, parse_message, parse_record, to_dict
+from ssc_core import NUMERIC_CANDIDATES_V2, Pose, SessionConfig, parse_message, parse_record, to_dict
 from ssc_runtime import (AcceptedTarget, CommandGate, ControllerError, LifecycleCoordinator,
                          LifecycleState, PLANT_TICK_NS, SessionRuntime, SnapshotCoordinator,
                          SyntheticController, proxy_forward, proxy_inverse)
@@ -34,14 +35,14 @@ def stamp(ns):
 
 def envelope(kind, sequence, ns, payload):
     return {"message_type": kind, "meta": {
-        "schema_version": "1.0", "session_id": SESSION, "message_id": f"{kind}-{sequence}",
+        "schema_version": "2.0", "session_id": SESSION, "message_id": f"{kind}-{sequence}",
         "source_id": kind, "sequence": sequence, "produced_at": stamp(ns)}, "payload": payload}
 
 
 @pytest.fixture
 def config(catalog):
     return parse_record(SessionConfig, next(m["payload"] for m in catalog["messages"]
-                        if m["message_type"] == "SessionConfig"), policy=NUMERIC_OFFLINE_V1)
+                        if m["message_type"] == "SessionConfig"), policy=NUMERIC_CANDIDATES_V2)
 
 
 @pytest.fixture
@@ -54,14 +55,14 @@ def setup(config):
 def target(plant, clock, *, seq=1, u=(1., 0.), position=(.409375, 0., .3),
            quaternion=(0., 0., 0., 1.), state=None):
     message = parse_message(envelope("ControlResult", seq, clock.now, {
-        "result_id": f"result-{seq}", "snapshot_id": f"snapshot-{seq}", "weights_id": f"weights-{seq}",
+        "result_id": f"result-{seq}", "snapshot_id": f"snapshot-{seq}", "selection_id": f"selection-{seq}",
         "control_epoch": 1, "command_seq": seq, "source_joystick_seq": 1, "source_robot_state_seq": 1,
         "status": "move", "evaluation_valid": True, "solver_status": "solved",
         "constraints_satisfied": False, "solve_time_s": .01,
-        "constraint_evaluations": [{"program_id": "distance", "raw_g": .000625,
-                                    "normalization_scale": .01, "penalty": 1/256}],
+        "candidate_evaluation": {"candidate_id": "distance", "distance_m": .000625, "raw_g": .000625,
+                                    "normalization_scale": .01, "penalty": 1/256},
         "next_tcp_pose": {"position_xyz": list(position), "quaternion_xyzw": [float(v) for v in quaternion]},
-        "horizon_s": .2}), policy=NUMERIC_OFFLINE_V1)
+        "horizon_s": .2}), policy=NUMERIC_CANDIDATES_V2)
     return AcceptedTarget(message, clock.now, clock.now + 200_000_000, u,
                           plant.sample() if state is None else state)
 
@@ -89,7 +90,7 @@ def test_receipt_does_not_manufacture_feedback_and_first_tick_matches_profile(se
     assert to_dict(observed.payload.sampled_at) == stamp(T0 + PLANT_TICK_NS)
     assert observed.meta.produced_at == observed.payload.sampled_at
     assert observed.meta.sequence == initial.meta.sequence + 1
-    assert parse_message(json.loads(json.dumps(to_dict(observed))), policy=NUMERIC_OFFLINE_V1) == observed
+    assert parse_message(json.loads(json.dumps(to_dict(observed))), policy=NUMERIC_CANDIDATES_V2) == observed
 
 
 def test_lag_and_translation_rotation_share_speed_limited_gamma(setup):
@@ -318,7 +319,7 @@ def test_deterministic_retained_plant_trace(config, tmp_path):
 def integrated(build):
     clock = Clock()
     store, request, records, _ = build()
-    config = parse_record(SessionConfig, records["SessionConfig"], policy=NUMERIC_OFFLINE_V1)
+    config = parse_record(SessionConfig, records["SessionConfig"], policy=NUMERIC_CANDIDATES_V2)
     plant = SyntheticController(config, session_id=SESSION, clock_ns=clock, clock_id=CLOCK)
     coord = SnapshotCoordinator(store, clock_ns=clock, clock_id=CLOCK,
         joystick_source_id="JoystickSample", robot_state_source_id=plant.source_id, mapping_id="normalized-xy-v1")
@@ -347,19 +348,16 @@ def integrated(build):
         control_epoch=dispatch.inputs.snapshot.control_epoch, command_seq=dispatch.command_seq,
         source_joystick_seq=dispatch.inputs.joystick.message.meta.sequence,
         source_robot_state_seq=dispatch.inputs.robot_state.message.meta.sequence,
-        constraint_evaluations=[{"program_id": b.program_id, "raw_g": .000625,
-            "normalization_scale": b.normalization_scale, "penalty": (.000625/b.normalization_scale)**2}
-            for b in dispatch.inputs.bundle.resolved.execution_bindings])
-    weights = envelope("ObjectWeights", 1, clock.now, {"weights_id": "weights-1",
-        "snapshot_id": dispatch.inputs.snapshot.snapshot_id, "estimator_config_id": "intent-linear-v1",
-        "weights": [{"object_id": c.object_id, "weight": 1/len(dispatch.inputs.bundle.resolved.candidates)}
-                    for c in dispatch.inputs.bundle.resolved.candidates], "assistance_strength": .5})
-    return plant, clock, lifecycle, joystick, result, weights
+        candidate_evaluation=None)
+    selection, evaluation = selection_and_evaluation(dispatch.inputs, "selection-1", result["payload"]["next_tcp_pose"]["position_xyz"])
+    result["payload"]["candidate_evaluation"] = evaluation
+    selection = envelope("CandidateSelection", 1, clock.now, selection)
+    return plant, clock, lifecycle, joystick, result, selection
 
 
 def test_real_gate_apply_then_local_release_and_late_result(integrated):
-    plant, clock, lc, joystick, result, weights = integrated
-    decision = lc.submit_result(result, weights=weights)
+    plant, clock, lc, joystick, result, selection = integrated
+    decision = lc.submit_result(result, selection=selection)
     assert decision.disposition == "accepted_move"
     assert plant.sample().payload.tcp_pose.position_xyz[0] == .4
     observed = tick(plant, clock)
@@ -368,19 +366,19 @@ def test_real_gate_apply_then_local_release_and_late_result(integrated):
     assert lc.state == LifecycleState.PAUSED and plant.target is None
     assert [e.operation for e in plant.events if e.operation in ("cancel", "hold", "stop")] == ["cancel", "hold"]
     before_events = plant.events
-    assert lc.submit_result(result, weights=weights).disposition == "discarded"
+    assert lc.submit_result(result, selection=selection).disposition == "discarded"
     assert plant.events == before_events
     assert tick(plant, clock).payload.tcp_pose == observed.payload.tcp_pose
 
 
 @pytest.mark.parametrize("failure", ["apply", "stop", "controller"])
 def test_controller_failures_reach_lifecycle_fault_and_require_rearm(integrated, failure):
-    plant, clock, lc, joystick, result, weights = integrated
+    plant, clock, lc, joystick, result, selection = integrated
     if failure == "apply":
         plant.fail_next("apply")
-        assert lc.submit_result(result, weights=weights).lifecycle_request == "FAULT"
+        assert lc.submit_result(result, selection=selection).lifecycle_request == "FAULT"
     else:
-        assert lc.submit_result(result, weights=weights).disposition == "accepted_move"
+        assert lc.submit_result(result, selection=selection).disposition == "accepted_move"
         tick(plant, clock)
         if failure == "stop": plant.fail_next("stop")
         plant.inject_controller_fault()

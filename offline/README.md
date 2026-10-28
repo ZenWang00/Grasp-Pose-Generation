@@ -1,20 +1,19 @@
-# Offline coordination package
+# Candidate-point offline coordination
 
-`ssc-runtime==0.7.0` implements the robot-owned atomic ActiveBundle store,
-immutable snapshot/local dispatch coordination, local command acceptance, and
-the coordinator lifecycle with local withdrawal, watchdogs and recovery, and
-a deterministic synthetic controller/feedback plant for
-[issue #1](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/1),
-[issue #2](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/2),
-[issue #3](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/3),
-[issue #4](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/4) and
-[issue #5](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/5).
-It imports no ROS, drivers, GPU libraries or online services. Installation uses
-the exact accepted server revision `6aaf178bc3f07735e298c9b8c05b1b6e2e672948`
-(`ssc-core==0.10.0`, schema 1.0, geometry-residual-v1). It also provides the complete [offline loop runner](../docs/offline-loop.md)
-with asynchronous fusion/optimization, local control, immutable archival and fresh-process replay.
+`ssc-runtime==0.8.0` consumes `ssc-core==0.11.0`, schema 2.0 and the
+[candidate profile](https://github.com/ZenWang00/semantic-shared-control/blob/main/docs/wiki/Offline-Candidate-Profile.md).
+[Issue #33](https://github.com/ZenWang00/semantic-shared-control/issues/33) replaces
+VLM-generated functions with grounded TCP target positions. One selected candidate
+provides soft three-dimensional position assistance; measured orientation is held.
+The joystick still controls XY motion, gates step size and stops motion on release.
 
-From the repository root, with Python 3.12:
+This package owns atomic activation, immutable snapshots, explicit selection
+history, supervised asynchronous solve dispatch, final local command acceptance,
+withdrawal/watchdogs and independent synthetic joint-derived feedback. It imports
+no ROS, drivers, GPU libraries or online services. Raw image proposals and real
+RGB-D grounding are outside this offline loop.
+
+From the repository root with Python 3.12:
 
 ```sh
 python3.12 -m venv .venv-offline
@@ -23,20 +22,15 @@ python3.12 -m venv .venv-offline
 .venv-offline/bin/python -m pip check
 ```
 
-The install fetches the pinned shared package source. Runtime is offline.
-The inherited ROS workspace and requirements are not used. Linux is required
-for real bounded numerical validation; macOS tests explicitly stub numerical
-success for activation/trust logic, and skip the real-worker integration test.
-This does not claim macOS resource isolation or hardware validation.
+Installation fetches the exact core revision pinned in `pyproject.toml`; execution
+is offline. Linux is required for supervised solver resource enforcement and
+full-loop evidence. macOS runs the deterministic component tests; Linux-only
+integration tests are explicitly skipped there. These are software simulation
+checks, not hardware or grasp-success evidence.
 
-See [the activation interface](../docs/active-bundle.md) for ownership,
-concurrency, failure semantics, evidence mapping and downstream responsibilities.
-See [snapshot and dispatch interfaces](../docs/snapshots.md) for local clock
-requirements, immutable worker inputs and accepted-command history.
-See [command acceptance and synthetic constraints](../docs/command-gate.md)
-for the trusted action boundary, ordering, independent live checks and evidence.
-See [lifecycle, withdrawal and watchdogs](../docs/lifecycle.md) for engagement,
-event-specific recovery, FAULT rearm, session/clock restarts and adapter handoff.
-
-See [the synthetic controller and feedback plant](../docs/synthetic-plant.md)
-for explicit clock steps, simulation provenance, failure injection and runner wiring.
+- [Activation](../docs/active-bundle.md): complete candidate context and atomic replacement.
+- [Snapshots](../docs/snapshots.md): clocks, frozen input, candidate selection and accepted history.
+- [Command gate](../docs/command-gate.md): independent checks and local motion authority.
+- [Lifecycle](../docs/lifecycle.md): release, stale input, cancellation and recovery.
+- [Synthetic plant](../docs/synthetic-plant.md): joint-derived feedback and failure injection.
+- [Complete offline loop](../docs/offline-loop.md): wheel installation, scenarios and replay.

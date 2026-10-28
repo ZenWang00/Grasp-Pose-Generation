@@ -4,7 +4,7 @@ import math
 import pytest
 from scipy.spatial.transform import Rotation
 
-from ssc_core import NUMERIC_OFFLINE_V1, Pose, SessionConfig, parse_record
+from ssc_core import NUMERIC_CANDIDATES_V2, Pose, SessionConfig, parse_record
 from ssc_core.host_constraints import MeasuredStateView
 from ssc_runtime import SyntheticHostChecker, basic_step_constraints, proxy_forward, proxy_inverse
 
@@ -12,7 +12,7 @@ from ssc_runtime import SyntheticHostChecker, basic_step_constraints, proxy_forw
 @pytest.fixture
 def config(catalog):
     data = next(m["payload"] for m in catalog["messages"] if m["message_type"] == "SessionConfig")
-    return parse_record(SessionConfig, data, policy=NUMERIC_OFFLINE_V1)
+    return parse_record(SessionConfig, data, policy=NUMERIC_CANDIDATES_V2)
 
 
 def pose(position=(.4, 0, .3), angles=(0, 0, 0)):

@@ -1,13 +1,9 @@
 # Lifecycle, withdrawal and watchdogs
 
-`ssc-runtime==0.4.0` implements [P1-13 / issue #4](https://github.com/ZenWang00/Grasp-Pose-Generation/issues/4).
-It consumes `ssc-core==0.6.0` at `95d618f567f5f057a1b3f1737cc394a105fa9a4e` and the
-accepted [offline-reference-v1](https://github.com/ZenWang00/semantic-shared-control/blob/95d618f567f5f057a1b3f1737cc394a105fa9a4e/docs/wiki/Offline-Reference-Profile.md)
-settings (sections 2 and 5). It implements
-[Runtime Lifecycle §§1,5–7](https://github.com/ZenWang00/semantic-shared-control/blob/43cf81a942dafa654f7c7e65acf2f7a295dea847/docs/wiki/Runtime-Lifecycle-and-Timing.md)
-for the offline core. Evidence is software simulation with a controllable clock
-and a recording adapter. No controller stopping time, physical safety, plant,
-transport or hardware behavior is established here.
+`ssc-runtime==0.8.0` uses `ssc-core==0.11.0`, schema 2.0 and the
+[candidate profile](https://github.com/ZenWang00/semantic-shared-control/blob/main/docs/wiki/Offline-Candidate-Profile.md).
+The lifecycle retains local authority, cancellation and watchdog behavior while
+selection history is explicitly reset on release, epoch and context changes.
 
 ## Ownership
 
@@ -24,7 +20,7 @@ active, reuses a session ID or does not start with fresh counters.
 | `on_input(message)` | joystick / measured-state adapters | Receives the sample; releases, engages or recovers on the local path |
 | `tick()` | runner, every plant tick | Source freshness, missed result deadline and liveness watchdogs; PAUSED recovery |
 | `dispatch_cycle()` | runner | Freezes and dispatches one snapshot, only while ACTIVE |
-| `submit_result(result, weights=...)` | worker transport | Gate decision, then the lifecycle request it carries |
+| `submit_result(result, selection=...)` | worker transport | Gate decision, then the lifecycle request it carries |
 | `begin_/prepare_/complete_initialization`, `initialize` | host | Motion-disabled validation and atomic activation |
 | `invalidate_context(reason)` | host | Task, scene, semantic, feature or configuration invalidation |
 | `controller_status(ready=, fault=)` | controller adapter | Readiness; a fault latches FAULT; a later healthy report clears its cause |

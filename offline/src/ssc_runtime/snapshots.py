@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from ssc_core import (
     CommandAcceptanceRecord, ControlSnapshot, Message,
-    NUMERIC_OFFLINE_V1, ResolvedSnapshot, TimePoint, parse_message, parse_record,
+    NUMERIC_CANDIDATES_V2, ResolvedSnapshot, TimePoint, parse_message, parse_record,
     to_dict,
 )
 
@@ -149,6 +149,8 @@ class SnapshotCoordinator:
         self._local_commands: dict[int, tuple[int, int]] = {}
         self._accepted: dict[str, AcceptedCommand] = {}
         self._previous: AcceptedCommand | None = None
+        self._selection = None
+        self._selection_source = None
         self._snapshot_seq = self._command_seq = 0
 
     @property
@@ -174,6 +176,7 @@ class SnapshotCoordinator:
             _counter(epoch, "control_epoch")
             _require(epoch > self._epoch, "old_epoch", "epoch must increase")
             self._epoch = epoch
+            self._selection = self._selection_source = None
 
     def _now(self):
         value = self._clock()
@@ -191,7 +194,7 @@ class SnapshotCoordinator:
 
     def _message(self, data):
         message = parse_message(to_dict(data) if type(data) is Message else data,
-                                policy=NUMERIC_OFFLINE_V1)
+                                policy=NUMERIC_CANDIDATES_V2)
         _require(message.meta.session_id == self._store.session_id, "session_mismatch",
                  "message is not from this session")
         return message
@@ -220,12 +223,14 @@ class SnapshotCoordinator:
                 _require(sampled >= previous.sampled_ns, "reversed_sample_time", kind)
                 _require(message.meta.message_id != previous.message.meta.message_id,
                          "replayed_input", "message identity was reused")
-            with self._store.artifacts() as (registry, _):
+            with self._store.artifacts() as registry:
                 message = registry.register_message(message)
             timed = TimedInput(message, sampled, now)
             self._latest[kind] = timed
             if kind == "JoystickSample":
                 self._history.append(timed)
+                if not self._enabled(timed):
+                    self._selection = self._selection_source = None
             return timed
 
     def _fresh(self, sample, timeout, now):
@@ -276,6 +281,10 @@ class SnapshotCoordinator:
             history = tuple(item for item in self._history
                             if item is not joystick and item.sampled_ns >= earliest)[-HISTORY_LIMIT:]
             request = bundle.attempt.request
+            if (self._selection_source is not None and
+                    (self._selection_source.bundle is not bundle or
+                     self._selection_source.snapshot.control_epoch != self._epoch)):
+                self._selection = self._selection_source = None
             snapshot = parse_record(ControlSnapshot, {
                 "snapshot_id": str(uuid4()), "snapshot_seq": self._snapshot_seq + 1,
                 "control_epoch": self._epoch, "config_id": config.config_id,
@@ -284,22 +293,41 @@ class SnapshotCoordinator:
                 "robot_state_ref": state.message.meta.message_id,
                 "joystick_history_refs": [item.message.meta.message_id for item in history],
                 "geometry_ref": to_dict(request.geometry_ref), "semantic_id": request.semantic_id,
-                "program_refs": [to_dict(ref) for ref in request.program_refs],
-                "execution_binding_refs": list(request.execution_binding_refs),
+                "candidate_set_id": request.candidate_set_id,
+                "previous_selection_id": self._selection.selection_id if self._selection else None,
                 "previous_applied_command_id": (self._previous.acceptance.applied_command_id
                                                 if self._previous else None),
-            }, policy=NUMERIC_OFFLINE_V1)
+            }, policy=NUMERIC_CANDIDATES_V2)
             resolved = ResolvedSnapshot(snapshot, bundle.resolved, joystick.message, state.message,
-                                        tuple(item.message for item in history))
+                                        tuple(item.message for item in history), self._selection,
+                                        self._selection_source.snapshot if self._selection_source else None)
             frozen = FrozenSnapshot(self._store.session_id, self._clock_id, bundle, resolved,
                                     joystick, state, history, self._previous, now, now + age,
                                     self._enabled(joystick))
             _require(self._store.is_current(bundle), "superseded_bundle", "context changed during assembly")
-            with self._store.artifacts() as (registry, _):
+            with self._store.artifacts() as registry:
                 registry.register_record(ControlSnapshot, snapshot, session_id=self._store.session_id)
             self._snapshot_seq += 1
             self._snapshots[snapshot.snapshot_id] = frozen
             return frozen
+
+    def record_selection(self, selection):
+        """Retain an explicit registered selection for subsequent snapshot lineage."""
+        with self._lock:
+            source = self.lookup_snapshot(selection.snapshot_id)
+            _require(source.snapshot.control_epoch == self._epoch and
+                     self._store.is_current(source.bundle), "old_selection", "selection context was canceled")
+            latest = self._latest.get("JoystickSample")
+            _require(source.motion_eligible and latest is not None and self._enabled(latest),
+                     "motion_disabled", "released input cannot retain a selection")
+            _require(self._selection_source is None or
+                     source.snapshot.snapshot_seq > self._selection_source.snapshot.snapshot_seq,
+                     "old_selection", "selection must advance snapshot sequence")
+            with self._store.artifacts() as registry:
+                resolved = registry.resolve_selection(selection.selection_id)
+                _require(resolved.selection == selection and resolved.snapshot == source.resolved,
+                         "selection_mismatch", "selection differs from registered snapshot")
+            self._selection, self._selection_source = selection, source
 
     def lookup_snapshot(self, snapshot_id: str) -> FrozenSnapshot:
         with self._lock:
@@ -390,7 +418,7 @@ class SnapshotCoordinator:
             _require(message.message_type == "ControlResult", "result_type", "expected ControlResult")
             record = parse_record(CommandAcceptanceRecord,
                                   to_dict(acceptance) if type(acceptance) is CommandAcceptanceRecord else acceptance,
-                                  policy=NUMERIC_OFFLINE_V1)
+                                  policy=NUMERIC_CANDIDATES_V2)
             result = message.payload
             _require(record.result_id == result.result_id, "acceptance_mismatch", "result ID differs")
             _require(record.command_accepted == (record.applied_command_id is not None),
@@ -420,7 +448,7 @@ class SnapshotCoordinator:
                          allocation[0] == self._epoch and allocation[1] <= checked,
                          "unknown_local_command", "local hold must use a reserved host sequence")
             if register_result:
-                with self._store.artifacts() as (registry, _):
+                with self._store.artifacts() as registry:
                     registry.register_message(message)
             entry = AcceptedCommand(message, record, source)
             self._accepted[record.applied_command_id] = entry

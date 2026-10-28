@@ -10,8 +10,10 @@ import math
 from typing import Protocol
 from uuid import uuid4
 
-from ssc_core import (CommandAcceptanceRecord, Message, NUMERIC_OFFLINE_V1,
-                      TimePoint, parse_message, to_dict)
+from scipy.spatial.transform import Rotation
+
+from ssc_core import (CommandAcceptanceRecord, Message, NUMERIC_CANDIDATES_V2,
+                      TimePoint, estimate_intent, get_intent_config, get_solver_config, parse_message, to_dict)
 
 from .constraints import SyntheticHostChecker, basic_step_constraints, measured_view
 from .snapshots import AcceptedCommand, NS, ResultArrival, SnapshotCoordinator, SnapshotError, _duration
@@ -61,7 +63,7 @@ class CommandGate:
     """
 
     def __init__(self, coordinator: SnapshotCoordinator, adapter: CommandAdapter, *,
-                 estimator_config_id: str = "intent-linear-v1"):
+                 estimator_config_id: str = "intent-candidates-v2"):
         if type(coordinator) is not SnapshotCoordinator:
             raise TypeError("expected SnapshotCoordinator")
         if not estimator_config_id or type(estimator_config_id) is not str:
@@ -194,17 +196,17 @@ class CommandGate:
         sequence = coordinator.allocate_local_command_sequence()
         result_id = str(uuid4())
         return parse_message({"message_type": "ControlResult", "meta": {
-            "schema_version": "1.0", "session_id": coordinator._store.session_id,
+            "schema_version": "2.0", "session_id": coordinator._store.session_id,
             "message_id": str(uuid4()), "source_id": "local-command-gate",
             "sequence": sequence, "produced_at": to_dict(self._stamp(now)),
         }, "payload": {
-            "result_id": result_id, "snapshot_id": None, "weights_id": None,
+            "result_id": result_id, "snapshot_id": None, "selection_id": None,
             "control_epoch": coordinator.control_epoch, "command_seq": sequence,
             "source_joystick_seq": None, "source_robot_state_seq": None,
             "status": "hold", "evaluation_valid": False, "solver_status": "not_run",
-            "constraints_satisfied": None, "solve_time_s": 0, "constraint_evaluations": [],
+            "constraints_satisfied": None, "solve_time_s": 0, "candidate_evaluation": None,
             "reason": reason,
-        }}, policy=NUMERIC_OFFLINE_V1)
+        }}, policy=NUMERIC_CANDIDATES_V2)
 
     def _local_hold(self, reason, bundle, now, *, fault=False):
         self._enabled = False
@@ -241,38 +243,50 @@ class CommandGate:
                                         fallback.actions, fallback.applied, fallback.lifecycle_request,
                                         fallback.adapter_error))
 
-    def _identities(self, message, weights_data, dispatch, registry):
+    def _identities(self, message, selection_data, dispatch, registry):
         result, source = message.payload, dispatch.inputs
-        if weights_data is not None:
-            weights_message = self._coordinator._message(weights_data)
-            if weights_message.message_type != "ObjectWeights":
-                raise ValueError("weights_type")
-            registry.register_message(weights_message)
-        if result.weights_id is not None:
-            weights = registry.resolve_weights(result.weights_id)
-            if (weights.weights.snapshot_id != source.snapshot.snapshot_id or
-                    weights.weights.estimator_config_id != self._estimator or
-                    weights.snapshot != source.resolved):
-                raise ValueError("weights_snapshot_mismatch")
-        bindings = {binding.program_id: binding for binding in source.bundle.resolved.execution_bindings}
-        evaluations = {value.program_id: value for value in result.constraint_evaluations}
-        if len(evaluations) != len(result.constraint_evaluations) or not set(evaluations) <= bindings.keys():
-            raise ValueError("evaluation_program_mismatch")
-        if result.status == "move" and evaluations.keys() != bindings.keys():
-            raise ValueError("evaluation_program_coverage")
-        for key, evaluation in evaluations.items():
-            binding = bindings[key]
-            if evaluation.normalization_scale != binding.normalization_scale:
+        if selection_data is not None:
+            selection_message = self._coordinator._message(selection_data)
+            if selection_message.message_type != "CandidateSelection":
+                raise ValueError("selection_type")
+            registry.register_message(selection_message)
+        selected = None
+        if result.selection_id is not None:
+            resolved = registry.resolve_selection(result.selection_id)
+            selection = resolved.selection
+            if (selection.snapshot_id != source.snapshot.snapshot_id or
+                    selection.estimator_config_id != self._estimator or resolved.snapshot != source.resolved):
+                raise ValueError("selection_snapshot_mismatch")
+            expected = estimate_intent(source.resolved, get_intent_config(self._estimator),
+                selection_id=selection.selection_id, policy=NUMERIC_CANDIDATES_V2).selection
+            if selection != expected:
+                raise ValueError("selection_recompute_mismatch")
+            selected = next((point for point in source.bundle.resolved.candidates
+                             if point.candidate_id == selection.selected_candidate_id), None)
+        evaluation = result.candidate_evaluation
+        if result.status == "move":
+            if selected is None or evaluation is None or evaluation.candidate_id != selected.candidate_id:
+                raise ValueError("evaluation_candidate_mismatch")
+            # Fixed metric is independently recomputed, not trusted worker output.
+            distance = math.dist(result.next_tcp_pose.position_xyz, selected.position_xyz)
+            solver = get_solver_config("solver-candidates-v2")
+            raw_g = distance - solver.distance_tolerance_m
+            scale = solver.distance_scale_m
+            if evaluation.normalization_scale != scale:
                 raise ValueError("evaluation_scale_mismatch")
-            penalty = max(0., evaluation.raw_g / binding.normalization_scale) ** 2
-            if not math.isfinite(penalty) or not math.isclose(penalty, evaluation.penalty, rel_tol=1e-9, abs_tol=1e-9):
-                raise ValueError("evaluation_penalty_mismatch")
-        # The generated residual is a diagnostic, not a host feasibility gate.
-        if result.status == "move" and result.constraints_satisfied != all(v.raw_g <= 1e-9 for v in evaluations.values()):
-            raise ValueError("evaluation_satisfaction_mismatch")
-        registry.register_message(message)  # Catch immutable-ID conflicts before apply.
+            for actual, expected in ((evaluation.distance_m, distance), (evaluation.raw_g, raw_g),
+                                     (evaluation.penalty, max(0., raw_g / scale) ** 2)):
+                if not math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-9):
+                    raise ValueError("evaluation_metric_mismatch")
+            if selection.assistance_strength == 0 and not math.isclose(
+                    result.next_tcp_pose.position_xyz[2], source.robot_state.message.payload.tcp_pose.position_xyz[2],
+                    rel_tol=0., abs_tol=1e-12):
+                raise ValueError("unassisted_height_changed")
+            if result.constraints_satisfied != (raw_g <= 1e-9):
+                raise ValueError("evaluation_satisfaction_mismatch")
+        registry.register_message(message)
 
-    def submit(self, data: dict | Message, *, weights: dict | Message | None = None) -> GateDecision:
+    def submit(self, data: dict | Message, *, selection: dict | Message | None = None) -> GateDecision:
         """Immediate local result arrival and decision; remote stamps grant nothing.
 
         Malformed/unattributable envelopes are discarded. Structurally valid,
@@ -295,8 +309,8 @@ class CommandGate:
             with coordinator._lock:
                 self._arrivals.append(ResultArrival(dispatch, message, received_ns,
                     received_ns < dispatch.expires_ns, received_ns < dispatch.solve_deadline_ns))
-            with coordinator._store.artifacts() as (registry, _):
-                self._identities(message, weights, dispatch, registry)
+            with coordinator._store.artifacts() as registry:
+                self._identities(message, selection, dispatch, registry)
         except Exception as exc:
             identity_error = str(exc)
         with coordinator.command_transaction() as bundle:
@@ -351,6 +365,10 @@ class CommandGate:
                     applied = self._accepted(message, "worker_hold: " + result.reason, checked)
                     self._last_eligible_result_ns = checked
                     return self._finish(GateDecision(applied.acceptance, "accepted_hold", actions, applied, "PAUSED"))
+                rotation_delta = (Rotation.from_quat(result.next_tcp_pose.quaternion_xyzw) *
+                    Rotation.from_quat(source.robot_state.message.payload.tcp_pose.quaternion_xyzw).inv()).magnitude()
+                if rotation_delta > 1e-8:
+                    raise ValueError("source_orientation_changed")
                 kwargs = dict(candidate_pose=result.next_tcp_pose, measured_state=measured_view(state.message.payload),
                               u_xy=joystick.message.payload.u_xy, dt_s=result.horizon_s, configuration=config)
                 for report in (basic_step_constraints(**kwargs), self._checker(**kwargs)):

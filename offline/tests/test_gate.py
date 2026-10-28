@@ -3,7 +3,8 @@ import json
 from threading import Event
 
 import pytest
-from ssc_core import NUMERIC_OFFLINE_V1, Pose, parse_record, to_dict
+from .helpers import selection_and_evaluation
+from ssc_core import NUMERIC_CANDIDATES_V2, Pose, parse_record, to_dict
 from ssc_core.host_constraints import MeasuredStateView
 from ssc_runtime import (CommandGate, SnapshotCoordinator, SyntheticHostChecker,
                          basic_step_constraints, proxy_forward, proxy_inverse)
@@ -24,7 +25,7 @@ def stamp(ns):
 
 def envelope(kind, sequence, ns, payload):
     return {"message_type": kind, "meta": {
-        "schema_version": "1.0", "session_id": "session-offline-v1",
+        "schema_version": "2.0", "session_id": "session-offline-v1",
         "message_id": f"{kind}-{sequence}", "source_id": kind,
         "sequence": sequence, "produced_at": stamp(ns)}, "payload": payload}
 
@@ -47,12 +48,12 @@ def activate(store, request):
 def move(dispatch, *, result_id):
     source = dispatch.inputs
     return envelope("ControlResult", dispatch.command_seq, 10 * NS, {
-        "result_id": result_id, "snapshot_id": source.snapshot.snapshot_id, "weights_id": "pending",
+        "result_id": result_id, "snapshot_id": source.snapshot.snapshot_id, "selection_id": "pending",
         "control_epoch": source.snapshot.control_epoch, "command_seq": dispatch.command_seq,
         "source_joystick_seq": source.joystick.message.meta.sequence,
         "source_robot_state_seq": source.robot_state.message.meta.sequence,
         "status": "move", "evaluation_valid": True, "solver_status": "solved",
-        "constraints_satisfied": False, "solve_time_s": .01, "constraint_evaluations": [],
+        "constraints_satisfied": False, "solve_time_s": .01, "candidate_evaluation": None,
         "next_tcp_pose": {"position_xyz": [.405,0,.3], "quaternion_xyzw": [0,0,0,1]},
         "horizon_s": source.snapshot.dt_s})
 
@@ -104,28 +105,24 @@ def proposal(coordinator, *, frozen=None, position=(.405, 0, .3), hold=False):
     dispatch = coordinator.dispatch(frozen or coordinator.assemble())
     result_id = "proposal-" + str(dispatch.command_seq)
     result = move(dispatch, result_id=result_id)
-    weights_id = "weights-" + str(dispatch.command_seq)
-    result["payload"]["weights_id"] = weights_id
+    selection_id = "selection-" + str(dispatch.command_seq)
+    result["payload"]["selection_id"] = selection_id
     result["payload"]["next_tcp_pose"]["position_xyz"] = list(position)
-    result["payload"]["constraint_evaluations"] = [{
-        "program_id": b.program_id, "raw_g": .001, "normalization_scale": b.normalization_scale,
-        "penalty": (.001 / b.normalization_scale) ** 2,
-    } for b in dispatch.inputs.bundle.resolved.execution_bindings]
+    result["payload"]["next_tcp_pose"]["quaternion_xyzw"] = list(dispatch.inputs.robot_state.message.payload.tcp_pose.quaternion_xyzw)
+    selection, evaluation = selection_and_evaluation(dispatch.inputs, selection_id, position)
+    result["payload"]["candidate_evaluation"] = evaluation
+    result["payload"]["constraints_satisfied"] = evaluation["raw_g"] <= 1e-9
     if hold:
         result["payload"].update(status="hold", reason="worker computation failure",
                                  evaluation_valid=False, solver_status="error", constraints_satisfied=None)
         result["payload"].pop("next_tcp_pose")
         result["payload"].pop("horizon_s")
-    weights = envelope("ObjectWeights", dispatch.command_seq, 10 * NS, {
-        "weights_id": weights_id, "snapshot_id": dispatch.inputs.snapshot.snapshot_id,
-        "estimator_config_id": "intent-linear-v1", "weights": [
-            {"object_id": c.object_id, "weight": 1 / len(dispatch.inputs.bundle.resolved.candidates)}
-            for c in dispatch.inputs.bundle.resolved.candidates], "assistance_strength": .5})
-    return result, weights, dispatch
+    selection = envelope("CandidateSelection", dispatch.command_seq, 10 * NS, selection)
+    return result, selection, dispatch
 
 
 def submit(gate, triple):
-    return gate.submit(triple[0], weights=triple[1])
+    return gate.submit(triple[0], selection=triple[1])
 
 
 def test_valid_positive_residual_newer_input_and_applied_history(gate_setup):
@@ -194,9 +191,9 @@ def test_later_dispatch_number_does_not_rescue_older_snapshot(gate_setup, hold):
     ("horizon", "horizon_mismatch"), ("echo", "source_sequence_mismatch"),
     ("reversal", "input_half_space"), ("smaller", "translation_norm"),
     ("release", "motion_input_disabled"), ("disabled", "motion_input_disabled"),
-    ("weights_snapshot", "missing_reference"), ("estimator", "weights_snapshot_mismatch"),
-    ("program", "evaluation_program_mismatch"), ("scale", "evaluation_scale_mismatch"),
-    ("penalty", "evaluation_penalty_mismatch"), ("missing_program", "evaluation_program_coverage"),
+    ("selection_snapshot", "missing_reference"), ("estimator", "selection_snapshot_mismatch"),
+    ("candidate", "evaluation_candidate_mismatch"), ("scale", "evaluation_scale_mismatch"),
+    ("penalty", "evaluation_metric_mismatch"), ("missing_candidate", "evaluation_candidate_mismatch"),
     ("workspace", "workspace_x_upper"), ("feedback_model", "synthetic_feedback_mismatch"),
 ])
 def test_current_failures_reject_move_and_submit_separate_local_hold(gate_setup, change, reason):
@@ -204,18 +201,18 @@ def test_current_failures_reject_move_and_submit_separate_local_hold(gate_setup,
     if change == "workspace":
         coord.receive(feedback(2, clock.now, position=(.499, 0, .3)))
     candidate = proposal(coord, position=(.504, 0, .3) if change == "workspace" else (.405, 0, .3))
-    result, weights, dispatch = candidate
+    result, selection, dispatch = candidate
     if change == "horizon": result["payload"]["horizon_s"] = .1
     if change == "echo": result["payload"]["source_joystick_seq"] += 1
     if change in ("reversal", "smaller", "release", "disabled"):
         u = {"reversal": [-1, 0], "smaller": [.1, 0], "release": [0, 0], "disabled": [1, 0]}[change]
         coord.receive(joystick(2, clock.now, u_xy=u, enabled=change != "disabled"))
-    if change == "weights_snapshot": weights["payload"]["snapshot_id"] = "unknown"
-    if change == "estimator": weights["payload"]["estimator_config_id"] = "unapproved"
-    if change == "program": result["payload"]["constraint_evaluations"][0]["program_id"] = "foreign"
-    if change == "scale": result["payload"]["constraint_evaluations"][0]["normalization_scale"] = 1
-    if change == "penalty": result["payload"]["constraint_evaluations"][0]["penalty"] = 99
-    if change == "missing_program": result["payload"]["constraint_evaluations"].pop()
+    if change == "selection_snapshot": selection["payload"]["snapshot_id"] = "unknown"
+    if change == "estimator": selection["payload"]["estimator_config_id"] = "unapproved"
+    if change == "candidate": result["payload"]["candidate_evaluation"]["candidate_id"] = "foreign"
+    if change == "scale": result["payload"]["candidate_evaluation"]["normalization_scale"] = 1
+    if change == "penalty": result["payload"]["candidate_evaluation"]["penalty"] = 99
+    if change == "missing_candidate": result["payload"]["candidate_evaluation"] = None
     if change == "feedback_model":
         bad = feedback(2, clock.now)
         bad["payload"]["joint_positions_rad"][0] = .5
@@ -309,13 +306,13 @@ def test_retained_gate_trace(gate_setup, tmp_path):
     clock.now += 20_000_000
     submit(gate, candidate)
     gate.local_hold("release")
-    trace = {"profile": "offline-reference-v1", "configuration": to_dict(bundle.resolved.configuration),
+    trace = {"profile": "offline-candidates-v2", "configuration": to_dict(bundle.resolved.configuration),
              "evidence_level": "synthetic component / spy adapter; no observed execution",
              "dispatch": {"command_seq": candidate[2].command_seq,
                           "created_ns": candidate[2].inputs.created_ns,
                           "solve_deadline_ns": candidate[2].solve_deadline_ns,
                           "expires_ns": candidate[2].expires_ns},
-             "proposal": candidate[0], "weights": candidate[1], "actions": spy.calls,
+             "proposal": candidate[0], "selection": candidate[1], "actions": spy.calls,
              "decisions": [{"proposal": to_dict(d.proposal), "disposition": d.disposition,
                             "actions": d.actions, "lifecycle_request": d.lifecycle_request,
                             "applied": to_dict(d.applied.result) if d.applied else None,
@@ -382,7 +379,7 @@ def test_arrival_deadline_and_acceptance_expiry_are_distinct(gate_setup, monkeyp
     decision = submit(gate, candidate)
     assert decision.proposal.command_accepted
     assert gate.arrivals[0].received_ns == 10 * NS
-    assert decision.proposal.checked_at == parse_record("TimePoint", stamp(clock.now), policy=NUMERIC_OFFLINE_V1)
+    assert decision.proposal.checked_at == parse_record("TimePoint", stamp(clock.now), policy=NUMERIC_CANDIDATES_V2)
 
 
 def test_context_cannot_change_between_final_checks_and_adapter_submission(gate_setup, monkeypatch):
@@ -456,7 +453,7 @@ def test_failure_fallback_uses_clock_after_host_check(gate_setup, monkeypatch):
     decision = submit(gate, candidate)
     assert not decision.proposal.command_accepted and decision.applied is not None
     assert spy.calls == ["cancel", "stop"]
-    assert decision.applied.acceptance.checked_at == parse_record("TimePoint", stamp(clock.now), policy=NUMERIC_OFFLINE_V1)
+    assert decision.applied.acceptance.checked_at == parse_record("TimePoint", stamp(clock.now), policy=NUMERIC_CANDIDATES_V2)
 
 
 def test_feedback_expiring_during_cancel_uses_stop(gate_setup, monkeypatch):
@@ -510,3 +507,60 @@ def test_result_expiring_inside_final_check_cannot_withdraw_permission(gate_setu
     decision = submit(gate, candidate)
     assert decision.disposition == "discarded" and spy.calls == []
     assert gate._enabled and gate.last_eligible_result_ns is None
+
+
+@pytest.mark.parametrize("sign", [1, -1])
+def test_gate_preserves_nonidentity_source_orientation_with_quaternion_sign_equivalence(gate_setup, sign):
+    from scipy.spatial.transform import Rotation
+    gate, coordinator, clock, spy, *_ = gate_setup
+    q = Rotation.from_euler("xyz", (.1, -.2, .15)).as_quat()
+    coordinator.receive(feedback(2, clock.now, rotation=tuple(q.tolist())))
+    candidate = proposal(coordinator)
+    candidate[0]["payload"]["next_tcp_pose"]["quaternion_xyzw"] = (sign * q).tolist()
+    # New measured feedback may differ slightly. Required held orientation is
+    # the pinned source orientation, while feasibility uses the current state.
+    fresh_q = Rotation.from_euler("xyz", (.101, -.2, .15)).as_quat()
+    coordinator.receive(feedback(3, clock.now, rotation=tuple(fresh_q.tolist())))
+    decision = submit(gate, candidate)
+    assert decision.disposition == "accepted_move"
+    assert spy.targets[-1].measured_state.meta.sequence == 3
+
+
+def test_gate_rejects_rotation_even_when_original_step_limits_allow_it(gate_setup):
+    from scipy.spatial.transform import Rotation
+    gate, coordinator, _, spy, *_ = gate_setup
+    candidate = proposal(coordinator)
+    candidate[0]["payload"]["next_tcp_pose"]["quaternion_xyzw"] = Rotation.from_euler("x", .001).as_quat().tolist()
+    decision = submit(gate, candidate)
+    assert decision.disposition == "rejected"
+    assert "source_orientation_changed" in decision.proposal.reason
+    assert "apply" not in spy.calls
+
+
+def test_gate_rejects_z_motion_when_assistance_is_disabled(build):
+    from ssc_core import estimate_intent, get_intent_config
+    import math
+    store, request, _, _ = build(change=lambda records, _: records["SessionConfig"].update(config_id="config-candidates-alpha0-v2"))
+    activate(store, request)
+    clock, adapter = Clock(), SpyAdapter()
+    coordinator = SnapshotCoordinator(store, clock_ns=clock, clock_id=CLOCK,
+        joystick_source_id="JoystickSample", robot_state_source_id="RobotState", mapping_id="normalized-xy-v1")
+    coordinator.receive(joystick()); coordinator.receive(feedback())
+    gate = CommandGate(coordinator, adapter, estimator_config_id="intent-candidates-alpha0-v2")
+    gate.set_authority(control_epoch=0, motion_enabled=True, controller_ready=True)
+    dispatch = coordinator.dispatch(coordinator.assemble())
+    selected = estimate_intent(dispatch.inputs.resolved, get_intent_config("intent-candidates-alpha0-v2"),
+        selection_id="alpha-zero-selection", policy=NUMERIC_CANDIDATES_V2).selection
+    result = move(dispatch, result_id="alpha-zero-result")
+    position = [.405, 0., .301]
+    point = next(p for p in dispatch.inputs.bundle.resolved.candidates if p.candidate_id == selected.selected_candidate_id)
+    distance = math.dist(position, point.position_xyz)
+    result["payload"].update(selection_id=selected.selection_id,
+        next_tcp_pose={"position_xyz": position, "quaternion_xyzw": [0.,0.,0.,1.]},
+        candidate_evaluation={"candidate_id": point.candidate_id, "distance_m": distance,
+            "raw_g": distance, "normalization_scale": .01, "penalty": (distance/.01)**2})
+    selection = envelope("CandidateSelection", 1, clock.now, to_dict(selected))
+    decision = gate.submit(result, selection=selection)
+    assert decision.disposition == "rejected"
+    assert "unassisted_height_changed" in decision.proposal.reason
+    assert "apply" not in adapter.calls

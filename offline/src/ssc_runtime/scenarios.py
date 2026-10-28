@@ -1,114 +1,77 @@
-"""Public synthetic fixture variants, with fresh identities for changed content."""
+"""Grounded TCP candidates for offline simulation; no perception or generated code."""
 
 import base64
-from collections import Counter
 from copy import deepcopy
-from hashlib import sha256
 from importlib.resources import files
 import json
 
-from ssc_core import (GeometryRef, HostBindingPolicy, HostNormalization, ProgramRef,
-                      TaskRef, UnitReview, feature_definition_digest, program_content_digest)
+from ssc_core import GeometryRef, TaskRef
 from .activation import ActivationRequest, ActiveBundleStore
 
-CORE_REVISION = "6aaf178bc3f07735e298c9b8c05b1b6e2e672948"
-SOLVER_ID = "solver-slsqp-batch-v2"
-PROFILE_ID = "offline-reference-batch-v2"
+CORE_REVISION = "0a3c169516b79e5056d426ad3eee7613fc0a562e"
+SOLVER_ID = "solver-candidates-v2"
+PROFILE_ID = "offline-candidates-v2"
 MAPPING = "integration-xy-v1"
-# A real one-pixel PNG and float32 zero depth. Metadata only, never perception.
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC")
-VARIANTS = ("default", "joystick-only", "positive-approach", "within-tolerance",
-            "computation-error", "workspace-face", "excluded-sphere")
+VARIANTS = ("default", "joystick-only", "higher-target", "equal-target", "lower-target",
+            "multiple-alternatives", "workspace-face", "excluded-sphere")
 
 
 class Fixture:
-    def __init__(self, variant="default", *, program_count=None):
+    def __init__(self, variant="default", *, candidate_count=None):
         if variant not in VARIANTS:
             raise ValueError(f"unknown fixture: {variant}")
         self.variant = variant
-        self.catalog = json.loads(files("ssc_runtime").joinpath("data/bottle_cup_offline_v1.json").read_bytes())
+        self.catalog = json.loads(files("ssc_runtime").joinpath("data/bottle_cup_candidates_v2.json").read_bytes())
         self.records = {m["message_type"]: m["payload"] for m in self.catalog["messages"]}
-        self.programs = self.catalog["constraint_programs"]
-        config, geometry, semantic, observation = (self.records[n] for n in
-            ("SessionConfig", "SceneGeometry", "SemanticContext", "SceneObservation"))
-        config["config_id"] = "config-offline-batch-v2"
-        suffix = "-integration-" + variant + "-v1"
+        config, geometry, semantic, observation, candidates = (self.records[n] for n in
+            ("SessionConfig", "SceneGeometry", "SemanticContext", "SceneObservation", "CandidateSet"))
+        suffix = "-integration-" + variant + "-v2"
         observation["observation_id"] += suffix
         observation["calibration_id"] += suffix
-        for kind in ("SceneGeometry", "SemanticContext"):
+        for kind in ("SceneGeometry", "SemanticContext", "CandidateSet"):
             self.records[kind]["observation_id"] = observation["observation_id"]
         geometry["geometry_id"] += suffix
         geometry["feature_set_id"] += suffix
-        semantic["feature_set_id"] = geometry["feature_set_id"]
+        semantic["feature_set_id"] = candidates["feature_set_id"] = geometry["feature_set_id"]
         semantic["semantic_id"] += suffix
+        candidates["candidate_set_id"] += suffix
         observation["rgb_ref"].update(asset_id="integration-rgb-v1", shape=[1, 1, 3])
         observation["depth_ref"].update(asset_id="integration-depth-v1", shape=[1, 1])
         self.assets = {"integration-rgb-v1": (PNG, "image/png"),
                        "integration-depth-v1": (bytes(4), "application/octet-stream")}
+        self.intent_id = "intent-candidates-alpha0-v2" if variant == "joystick-only" else "intent-candidates-v2"
         if variant == "joystick-only":
-            config["config_id"] = "config-offline-batch-alpha0-v2"
-        self.intent_id = "intent-linear-batch-alpha0-v2" if variant == "joystick-only" else "intent-linear-batch-v2"
-        if variant in ("positive-approach", "within-tolerance", "computation-error", "workspace-face", "excluded-sphere"):
-            self.programs = self.programs[:1]
-            geometry["objects"] = geometry["objects"][:1]
-            geometry["keypoints"] = geometry["keypoints"][:1]
-            semantic["object_relevance"] = semantic["object_relevance"][:1]
-        if variant in ("positive-approach", "within-tolerance"):
-            geometry["keypoints"][0]["position_xyz"] = [.42, 0., .3]
-            self.programs[0]["parameters"][0]["value"] = .01 if variant == "positive-approach" else .03
-        if variant in ("workspace-face", "excluded-sphere"):
-            geometry["keypoints"][0]["position_xyz"] = ([.51, 0., .3] if variant == "workspace-face" else [.45, .07, .3])
-        if variant == "computation-error":
-            program = self.programs[0]
-            program.update(source_code="def evaluate(p_tcp, R_control_tcp, keypoints, axis_dirs, params):\n    return params[0] / (p_tcp[0] - params[1])\n",
-                keypoint_bindings=[], output_unit="dimensionless", parameters=[
-                    {"name": "numerator", "value": .01, "unit": "m"},
-                    {"name": "pole_x", "value": .405, "unit": "m"}])
-        for p in self.programs:
-            p["program_id"] += suffix
-            p["source_sha256"] = sha256(p["source_code"].encode()).hexdigest()
-        self.binding_weights = {}
-        if program_count is not None:
-            if type(program_count) is not int or not 2 <= program_count <= 16 or variant != "default":
-                raise ValueError("program_count requires the default fixture and an integer in 2-16")
-            originals = self.programs
-            self.programs = [deepcopy(originals[i % 2]) for i in range(program_count)]
-            counts = Counter(p["object_id"] for p in self.programs)
-            for i, p in enumerate(self.programs):
-                p["program_id"] += f"-batch-{program_count}-{i}"
-                self.binding_weights[p["program_id"]] = 1. / counts[p["object_id"]]
-            semantic["semantic_id"] += f"-batch-{program_count}"
-        semantic["program_refs"] = [{"program_id": p["program_id"], "source_sha256": p["source_sha256"]}
-                                    for p in self.programs]
-        self.validation = []
+            config["config_id"] = "config-candidates-alpha0-v2"
+        if variant in ("higher-target", "equal-target", "lower-target", "workspace-face", "excluded-sphere"):
+            candidates["candidates"] = candidates["candidates"][:1]
+            point = candidates["candidates"][0]
+            point["position_xyz"] = {
+                "higher-target": [.42, 0., .32], "equal-target": [.42, 0., .30],
+                "lower-target": [.42, 0., .28], "workspace-face": [.51, 0., .30],
+                "excluded-sphere": [.45, .07, .30]}[variant]
+        if variant == "multiple-alternatives":
+            first = candidates["candidates"][0]
+            candidates["candidates"] = [dict(first, candidate_id=first["candidate_id"] + "-high",
+                position_xyz=[.42, 0., .32]), dict(first, candidate_id=first["candidate_id"] + "-low",
+                position_xyz=[.42, 0., .28])]
+        if candidate_count is not None:
+            if type(candidate_count) is not int or not 1 <= candidate_count <= 16 or variant != "default":
+                raise ValueError("candidate_count requires the default fixture and an integer in 1-16")
+            originals = candidates["candidates"]
+            candidates["candidates"] = [dict(deepcopy(originals[i % 2]),
+                candidate_id=f"candidate-{candidate_count}-{i:02d}") for i in range(candidate_count)]
+            candidates["candidate_set_id"] += f"-count-{candidate_count}"
         self.registered = []
 
     def create_store(self, session_id):
         geometry, config, task = (self.records[n] for n in ("SceneGeometry", "SessionConfig", "TaskContext"))
-        reviews = tuple(UnitReview("review-" + p["program_id"], program_content_digest(p),
-            geometry["scene_id"], geometry["feature_set_id"], feature_definition_digest(geometry),
-            p["output_unit"], tuple(v["unit"] for v in p["parameters"]), "offline fixture formula review",
-            "Distance minus tolerance in metres; division variant divides two metre quantities.") for p in self.programs)
-        policies = tuple(HostBindingPolicy(config["config_id"], p["program_id"],
-            HostNormalization(p["output_unit"], 1. if p["output_unit"] == "dimensionless" else .01,
-                              self.binding_weights.get(p["program_id"], 1.))) for p in self.programs)
-        store = ActiveBundleStore(session_id, unit_reviews=reviews, binding_policies=policies)
-        bindings = []
-        with store.artifacts() as (registry, validator):
+        store = ActiveBundleStore(session_id)
+        with store.artifacts() as registry:
             for kind, value in self.records.items():
                 self.registered.append((kind, registry.register_record(kind, value, session_id=session_id)))
-            for p in self.programs:
-                self.registered.append(("ConstraintProgram", registry.register_record("ConstraintProgram", p, session_id=session_id)))
-                report = validator.validate(p, geometry=geometry, config_id=config["config_id"], motion_disabled=True)
-                self.validation.append(report)
-                if report.receipt.status != "accepted":
-                    raise RuntimeError(f"fixture validation failed: {report.receipt.diagnostics}")
-                binding = validator.create_binding("host-batch-v2-" + p["program_id"], receipt_id=report.receipt.receipt_id,
-                    geometry_ref=GeometryRef(geometry["geometry_id"], geometry["revision"]), config_id=config["config_id"])
-                self.registered.extend((("ProgramValidationReceipt", report.receipt), ("ProgramExecutionBinding", binding)))
-                bindings.append(binding.binding_id)
         request = ActivationRequest(session_id, config["config_id"], TaskRef(task["task_id"], task["revision"]),
             geometry["scene_id"], geometry["observation_id"], GeometryRef(geometry["geometry_id"], geometry["revision"]),
             geometry["feature_set_id"], self.records["SemanticContext"]["semantic_id"],
-            tuple(ProgramRef(p["program_id"], p["source_sha256"]) for p in self.programs), tuple(bindings))
+            self.records["CandidateSet"]["candidate_set_id"])
         return store, request

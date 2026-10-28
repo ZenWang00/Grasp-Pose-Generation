@@ -36,7 +36,7 @@ from .activation import ActivationOutcome, ActivationRequest, ActiveBundleStore,
 from .gate import CommandGate, GateDecision
 from .snapshots import DispatchRecord, SnapshotCoordinator, SnapshotError, TimedInput, _duration
 
-# offline-reference-v1 section 2: eligible-result liveness watchdog.
+# offline-candidates-v2 section 2: eligible-result liveness watchdog.
 DEFAULT_LIVENESS_TIMEOUT_S = 0.2
 
 # Recovery causes recorded for a PAUSED episode (Runtime Lifecycle section 6).
@@ -633,14 +633,14 @@ class LifecycleCoordinator:
         return record
 
     # --------------------------------------------------------------- results
-    def submit_result(self, data: dict | Message, *, weights: dict | Message | None = None) -> GateDecision | None:
+    def submit_result(self, data: dict | Message, *, selection: dict | Message | None = None) -> GateDecision | None:
         """Worker result entry point. Gate preflight runs without the lifecycle lock."""
         self._reject_reentry()
         runtime = self._runtime
         epoch = runtime.coordinator.control_epoch
         try:
             with self._calling_out():
-                decision = runtime.gate.submit(data, weights=weights)
+                decision = runtime.gate.submit(data, selection=selection)
         except SnapshotError as exc:
             if exc.code != "invalid_clock":
                 raise

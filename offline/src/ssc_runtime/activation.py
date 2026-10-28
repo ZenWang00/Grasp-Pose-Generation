@@ -12,9 +12,9 @@ from typing import Literal
 from uuid import uuid4
 
 from ssc_core import (
-    AcceptanceError, GeometryRef, HostBindingPolicy, HostProgramValidator,
-    NUMERIC_OFFLINE_V1, ProgramRef, RegistryError, ResolvedBundle,
-    SceneObservation, SessionRegistry, TaskRef, UnitReview, ValidationError,
+    GeometryRef,
+    NUMERIC_CANDIDATES_V2, RegistryError, ResolvedBundle,
+    SceneObservation, SessionRegistry, TaskRef, ValidationError,
     parse_record, to_dict,
 )
 
@@ -50,8 +50,7 @@ class ActivationRequest:
     geometry_ref: GeometryRef
     feature_set_id: str
     semantic_id: str
-    program_refs: tuple[ProgramRef, ...]
-    execution_binding_refs: tuple[str, ...]
+    candidate_set_id: str
 
     def __post_init__(self):
         for name in ("session_id", "config_id", "scene_id", "observation_id",
@@ -61,16 +60,8 @@ class ActivationRequest:
             value = getattr(self, name)
             if type(value) is not cls:
                 raise TypeError(f"{name} must be {cls.__name__}")
-            object.__setattr__(self, name, parse_record(cls, to_dict(value), policy=NUMERIC_OFFLINE_V1))
-        if type(self.program_refs) is not tuple or type(self.execution_binding_refs) is not tuple:
-            raise TypeError("reference collections must be immutable tuples")
-        if any(type(ref) is not ProgramRef for ref in self.program_refs):
-            raise TypeError("program_refs must contain ProgramRef values")
-        object.__setattr__(self, "program_refs", tuple(
-            parse_record(ProgramRef, to_dict(ref), policy=NUMERIC_OFFLINE_V1)
-            for ref in self.program_refs))
-        for ref in self.execution_binding_refs:
-            _text(ref, "execution_binding_refs")
+            object.__setattr__(self, name, parse_record(cls, to_dict(value), policy=NUMERIC_CANDIDATES_V2))
+        _text(self.candidate_set_id, "candidate_set_id")
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -111,14 +102,10 @@ class ActiveBundleStore:
     context currency and their independent authority/freshness requirements.
     """
 
-    def __init__(self, session_id: str, *, unit_reviews: tuple[UnitReview, ...],
-                 binding_policies: tuple[HostBindingPolicy, ...],
-                 compatibility: HostCompatibility = HostCompatibility()):
+    def __init__(self, session_id: str, *, compatibility: HostCompatibility = HostCompatibility()):
         if type(compatibility) is not HostCompatibility:
             raise TypeError("expected trusted HostCompatibility")
-        self._registry = SessionRegistry(session_id, policy=NUMERIC_OFFLINE_V1)
-        self._validator = HostProgramValidator(self._registry, unit_reviews=unit_reviews,
-                                               binding_policies=binding_policies)
+        self._registry = SessionRegistry(session_id, policy=NUMERIC_CANDIDATES_V2)
         self._compatibility = compatibility
         self._artifact_lock = RLock()
         self._state_lock = RLock()
@@ -133,14 +120,9 @@ class ActiveBundleStore:
 
     @contextmanager
     def artifacts(self):
-        """Serialize host registration/validation; do not retain mutable services.
-
-        Yields (SessionRegistry, HostProgramValidator). Call validate with motion
-        disabled, then create_binding on this authority. Imported receipts are
-        never sufficient. Do not wait for another preparation thread here.
-        """
+        """Serialize candidate and context registration; retain immutable records only."""
         with self._artifact_lock:
-            yield self._registry, self._validator
+            yield self._registry
 
     def begin(self, request: ActivationRequest) -> InitializationAttempt:
         if type(request) is not ActivationRequest:
@@ -185,21 +167,17 @@ class ActiveBundleStore:
 
     def _resolve(self, attempt: InitializationAttempt) -> ActiveBundle:
         request = attempt.request
-        with self.artifacts() as (registry, validator):
+        with self.artifacts() as registry:
             resolved = registry.resolve_bundle(
                 config_id=request.config_id, task_ref=request.task_ref,
                 geometry_ref=request.geometry_ref, semantic_id=request.semantic_id,
-                program_refs=request.program_refs,
-                execution_binding_refs=request.execution_binding_refs)
+                candidate_set_id=request.candidate_set_id)
             for name in self._compatibility.__dataclass_fields__:
                 if getattr(resolved.configuration, name) != getattr(self._compatibility, name):
-                    raise AcceptanceError("host_incompatible", f"configuration.{name} differs from installed host")
+                    raise RegistryError("activation", "host_incompatible", f"configuration.{name} differs from installed host")
             for name in ("scene_id", "observation_id", "feature_set_id"):
                 if getattr(resolved.geometry, name) != getattr(request, name):
-                    raise AcceptanceError("context_mismatch", f"geometry.{name} differs from requested context")
-            for binding in resolved.execution_bindings:
-                validator.validate_binding(binding.binding_id, geometry_ref=request.geometry_ref,
-                                           config_id=request.config_id)
+                    raise RegistryError("activation", "context_mismatch", f"geometry.{name} differs from requested context")
             observation = registry.get_record(SceneObservation, request.observation_id,
                                                session_id=self.session_id)
             semantic_observation = registry.get_record(SceneObservation, resolved.semantic.observation_id,
@@ -217,8 +195,8 @@ class ActiveBundleStore:
         try:
             bundle = self._resolve(attempt)
             result = ActivationOutcome("prepared", attempt.attempt_id, "compatible_context",
-                                       "all artifacts and local receipts verified; publication pending", bundle)
-        except (RegistryError, AcceptanceError, ValidationError) as exc:
+                                       "all candidate and context records verified; publication pending", bundle)
+        except (RegistryError, ValidationError) as exc:
             result = ActivationOutcome("rejected", attempt.attempt_id, exc.code, str(exc))
         except Exception:
             # Programming/host failures remain visible to the caller, but must
