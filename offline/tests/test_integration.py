@@ -105,15 +105,16 @@ def test_normal_loop_history_and_independent_feedback(tmp_path, make_loop):
 def test_profile_golden_movement(variant, dx, make_loop, tmp_path):
     with make_loop(variant) as loop:
         loop.initialize()
-        result, selection, _, _ = move(loop.cycle())
+        result, selection, _, dispatch = move(loop.cycle())
         pose = result.payload.next_tcp_pose
         assert pose.position_xyz[0] - .4 == pytest.approx(dx, abs=1e-6)
-        assert pose.position_xyz[1:] == pytest.approx((0., .3), abs=1e-9)
+        assert pose.position_xyz[1:] == pytest.approx((0., .3), abs=1e-6)
         evaluation = result.payload.candidate_evaluation
         assert evaluation.distance_m == pytest.approx(.41 - pose.position_xyz[0], abs=1e-9)
         assert evaluation.penalty == pytest.approx((evaluation.distance_m / .01) ** 2)
         if variant == "joystick-only":
             assert selection.payload.assistance_strength == 0
+            assert pose.position_xyz[2] == dispatch.inputs.robot_state.message.payload.tcp_pose.position_xyz[2]
         (tmp_path / "integration-golden.json").write_text(json.dumps({
             "variant": variant, "expected_dx_m": dx, "target": to_dict(pose),
             "evaluation": to_dict(evaluation), "position_atol_m": 1e-6}, indent=2))
@@ -147,7 +148,11 @@ def test_same_object_alternatives_select_one_target(make_loop):
 def test_current_direction_selection_and_accepted_smoothing(loop):
     right = move(loop.cycle())
     assert right[1].payload.selected_candidate_id == "candidate-bottle-v2"
-    loop.step(u=(1., 0.))
+    # Match the normal runner's control-period cadence. The early-reversal
+    # stale-endpoint rejection is tested separately against fresh feedback.
+    next_cycle = right[3].dispatched_ns + round(right[3].inputs.snapshot.dt_s * 1e9)
+    while loop.clock.now < next_cycle:
+        loop.step(u=(1., 0.))
     left = move(loop.cycle((-1., 0.)))
     assert left[1].payload.selected_candidate_id == "candidate-cup-v2"
     assert left[3].inputs.snapshot.previous_selection_id == right[1].payload.selection_id

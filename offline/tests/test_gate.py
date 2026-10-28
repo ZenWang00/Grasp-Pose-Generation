@@ -569,3 +569,23 @@ def test_gate_rejects_z_motion_when_assistance_is_disabled(build):
     assert decision.disposition == "rejected"
     assert "unassisted_height_changed" in decision.proposal.reason
     assert "apply" not in adapter.calls
+
+
+def test_inflight_reversal_rejected_when_fresh_feedback_exceeds_step_bound(gate_setup):
+    gate, coordinator, clock, spy, *_ = gate_setup
+    # A previous rightward command can continue while a leftward proposal is
+    # computed. A valid snapshot-relative step is not a lease on live geometry.
+    coordinator.receive(joystick(2, clock.now, u_xy=[-1., 0.]))
+    coordinator.receive(feedback(2, clock.now, position=(.401, 0., .3)))
+    candidate = proposal(coordinator, position=(.3918984327723197, 0., .3))
+    assert .401 - candidate[0]["payload"]["next_tcp_pose"]["position_xyz"][0] < .01
+    clock.now += 20_000_000
+    coordinator.receive(joystick(3, clock.now, u_xy=[-1., 0.]))
+    coordinator.receive(feedback(3, clock.now, position=(.402, 0., .3)))
+    assert .402 - candidate[0]["payload"]["next_tcp_pose"]["position_xyz"][0] > .01
+    decision = submit(gate, candidate)
+    assert decision.disposition == "rejected"
+    assert "translation_norm" in decision.proposal.reason
+    assert "translation_x_lower" in decision.proposal.reason
+    assert spy.calls == ["cancel", "hold"]
+    assert decision.applied.result.payload.status == "hold"
