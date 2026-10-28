@@ -9,7 +9,12 @@ from dataclasses import replace
 import json
 
 import pytest
-from .helpers import selection_and_evaluation
+from pathlib import Path
+import runpy
+
+# Pytest 7 importlib mode may create a synthetic `tests` package that has no
+# sibling search path. Load this pure test helper without altering sys.path.
+selection_and_evaluation = runpy.run_path(str(Path(__file__).with_name("helpers.py")))["selection_and_evaluation"]
 from ssc_core import Pose, to_dict
 from ssc_runtime import (CommandGate, LifecycleCoordinator, LifecycleError, SessionRuntime,
                          SnapshotCoordinator, proxy_inverse)

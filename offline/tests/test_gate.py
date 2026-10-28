@@ -3,7 +3,12 @@ import json
 from threading import Event
 
 import pytest
-from .helpers import selection_and_evaluation
+from pathlib import Path
+import runpy
+
+# Pytest 7 importlib mode may create a synthetic `tests` package that has no
+# sibling search path. Load this pure test helper without altering sys.path.
+selection_and_evaluation = runpy.run_path(str(Path(__file__).with_name("helpers.py")))["selection_and_evaluation"]
 from ssc_core import NUMERIC_CANDIDATES_V2, Pose, parse_record, to_dict
 from ssc_core.host_constraints import MeasuredStateView
 from ssc_runtime import (CommandGate, SnapshotCoordinator, SyntheticHostChecker,
